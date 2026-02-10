@@ -69,3 +69,18 @@ python run_pipeline.py \
     --limit 5.0 --snap 5.0 --visualize \
     --output "bridge.json"
 ```
+
+
+    python run_pipeline.py \
+    --nelx 150 --nely 40 --nelz 4 \
+    --volfrac 0.3 --penal 3.0 --rmin 3.0 --max_loop 100 \
+    --load_x 150 --load_y 20 --load_z 2 \
+    --load_fx 0.0 --load_fy -100.0 --load_fz 0.0 \
+    --prune_len 2.0 --collapse_thresh 3.0 --rdp 4.0 --radius_mode uniform \
+    --limit 5.0 --snap 5.0 --visualize \
+    --skip_top3d \
+    --output "matlab_replicated.json"
+
+
+
+        --skip_top3d \

@@ -70,6 +70,7 @@ python run_pipeline.py \
     --output "bridge.json"
 ```
 
+### 150x50x4 Cantilever 
 
     python run_pipeline.py \
     --nelx 150 --nely 40 --nelz 4 \
@@ -80,7 +81,3 @@ python run_pipeline.py \
     --limit 5.0 --snap 5.0 --visualize \
     --skip_top3d \
     --output "matlab_replicated.json"
-
-
-
-        --skip_top3d \

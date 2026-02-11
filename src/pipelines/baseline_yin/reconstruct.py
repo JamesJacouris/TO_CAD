@@ -271,7 +271,7 @@ def main():
         pcd_class = viz_skeleton_classification(skeleton, args.pitch, origin)
         if pcd_class: show_step("2b. Skeleton Classification", [pcd_class])
     else:
-        skeleton = thin_grid_yin(solid.copy(), tags=bc_tags, max_iters=args.max_iters)  # tags=None here!
+        skeleton = thin_grid_yin(solid.copy(), tags=bc_tags, max_iters=args.max_iters)  
     
     # We use bc_tags later in extract_graph for Proximity Check
     # Build a full tag grid to pass

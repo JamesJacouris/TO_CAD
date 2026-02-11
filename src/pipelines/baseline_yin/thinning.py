@@ -172,20 +172,9 @@ def thin_grid_yin(volume, tags=None, max_iters=100, record_iterations=False):
             cands_arr = np.array(cands, dtype=np.int32)
             
             # 2. Sequential Delete
-            # Numba requires compatible types. iteration_map might be None.
-            # Passing None to njit functions can be tricky if types mismatch.
-            # Let's handle it by passing specific array or dummy.
-            # Actually, simpler: Use global iteration_map in python? No, loop is python.
-            # Only sequential_delete is njit.
-            # We can pass iteration_map if exists, else None.
-            # Does numba handle Optional arrays? Yes usually.
-            
             if iteration_map is not None:
                 n = sequential_delete(volume, cands_arr, iteration_map, it + 1)
             else:
-                 # Helper wrapper for None case to appease numba typing if needed
-                 # But we can just pass a dummy array or None if supported.
-                 # Let's rely on None support.
                  n = sequential_delete(volume, cands_arr, None, 0)
                  
             if n > 0:

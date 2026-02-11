@@ -1,0 +1,19 @@
+{
+  "voxel_vol": 686.0,
+  "skeleton_vol": 685.9999999999999,
+  "volume_error": 1.6572425323850733e-16,
+  "num_nodes": 11,
+  "num_edges": 16,
+  "min_edge_length": 8.12403840463596,
+  "mean_edge_length": 12.860397829802181,
+  "hausdorff_dist": 10.0,
+  "domain_size": 60.0,
+  "params": {
+    "prune_len": 2.7002861744880793,
+    "collapse_thresh": 3.4932353279904373,
+    "rdp": 2.32985136614269,
+    "radius_mode": "uniform",
+    "vol_thresh": 0.3
+  },
+  "score": 0.0523333333333335
+}

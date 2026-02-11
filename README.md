@@ -77,7 +77,36 @@ python run_pipeline.py \
     --volfrac 0.3 --penal 3.0 --rmin 3.0 --max_loop 100 \
     --load_x 150 --load_y 20 --load_z 2 \
     --load_fx 0.0 --load_fy -100.0 --load_fz 0.0 \
-    --prune_len 2.0 --collapse_thresh 3.0 --rdp 4.0 --radius_mode uniform \
+    --prune_len 2.0 --collapse_thresh 3.0 --rdp 2.5 --radius_mode uniform \
     --limit 5.0 --snap 5.0 --visualize \
     --skip_top3d \
     --output "matlab_replicated.json"
+
+
+### Best Params for 150x50x4 Cantilever
+    python run_pipeline.py \
+    --nelx 150 --nely 40 --nelz 4 \
+    --volfrac 0.3 --penal 3.0 --rmin 3.0 --max_loop 100 \
+    --load_x 150 --load_y 20 --load_z 2 \
+    --load_fx 0.0 --load_fy -100.0 --load_fz 0.0 \
+    --prune_len 4.15 --collapse_thresh 3.84 --rdp 0.78 --radius_mode uniform \
+    --limit 5.0 --snap 5.0 --visualize \
+    --skip_top3d \
+    --output "matlab_replicated.json"
+
+
+
+# Run 100 trials (~3-5 minutes)
+python tune_parameters.py output/hybrid_v2/matlab_replicated_top3d.npz --trials 100
+
+python tune_parameters.py output/hybrid_v2/short_cantilever_top3d.npz --trials 100
+
+# Best Params for Short Cantilever
+python run_pipeline.py \
+    --nelx 60 --nely 20 --nelz 2 \
+    --volfrac 0.2 --penal 3.0 --rmin 1.5 --max_loop 80 \
+    --load_x 60 --load_y 10 --load_z 1 \
+    --load_fy -1.0 \
+    --prune_len 2.0 --collapse_thresh 3.0 --rdp 2.0 --radius_mode uniform \
+    --limit 5.0 --snap 5.0 --visualize \
+    --output "short_cantilever.json"

@@ -1,0 +1,16 @@
+{
+  "trial_number": 0,
+  "score": 0.05296823595120404,
+  "params": {
+    "prune_len": 2.1854305348131313,
+    "collapse_thresh": 4.802857225639665,
+    "rdp": 3.793972738151323,
+    "radius_mode": "uniform"
+  },
+  "user_attrs": {
+    "hausdorff_dist": 20.97617696340303,
+    "num_edges": 22,
+    "num_nodes": 14,
+    "volume_error": 0.0
+  }
+}

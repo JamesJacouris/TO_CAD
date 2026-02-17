@@ -1,0 +1,110 @@
+% ============================================================
+% INLINE FLOWCHART - Paste directly into your LaTeX document
+% Place after your introduction paragraph
+% ============================================================
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    node distance=2.2cm,
+    auto,
+    every label/.append style={font=\sffamily\tiny}
+]
+
+% Define colors
+\definecolor{stage0}{RGB}{230, 126, 34}    % Orange
+\definecolor{stage1}{RGB}{41, 128, 185}    % Blue
+\definecolor{stage2}{RGB}{39, 174, 96}     % Green
+\definecolor{stage3}{RGB}{155, 89, 182}    % Purple
+\definecolor{io}{RGB}{189, 195, 199}       % Gray
+
+% Define styles
+\tikzset{
+    stagebox/.style={
+        rectangle,
+        minimum width=4cm,
+        minimum height=1cm,
+        text centered,
+        text width=3.6cm,
+        font=\sffamily\small\bfseries,
+        draw,
+        line width=2pt,
+        drop shadow={opacity=0.3}
+    },
+    stage0/.style={stagebox, fill=stage0!90, text=white, draw=stage0!50},
+    stage1/.style={stagebox, fill=stage1!90, text=white, draw=stage1!50},
+    stage2/.style={stagebox, fill=stage2!90, text=white, draw=stage2!50},
+    stage3/.style={stagebox, fill=stage3!90, text=white, draw=stage3!50},
+
+    iobox/.style={
+        rectangle,
+        rounded corners=3pt,
+        minimum width=3.2cm,
+        minimum height=0.7cm,
+        text centered,
+        text width=3cm,
+        font=\sffamily\scriptsize,
+        draw=io!80,
+        line width=1.5pt
+    },
+    inputbox/.style={iobox, fill=io!15},
+    outputbox/.style={iobox, fill=io!30},
+
+    arrow/.style={->, >=stealth, line width=2pt},
+    dashed arrow/.style={->, >=stealth, line width=1.5pt, dashed},
+}
+
+% --- STAGE 0 ---
+\node[stage0] (s0) at (0, 0) {Stage 0\\Topology\\Optimization};
+\node[outputbox, below=0.8cm of s0] (o0) {\ttfamily top3d.npz};
+
+% --- STAGE 1 ---
+\node[stage1] (s1) at (4.5, 0) {Stage 1\\Voxel\\Reconstruction};
+\node[outputbox, below=0.8cm of s1] (o1) {\ttfamily *\_1\_recon.json};
+
+% --- STAGE 2 ---
+\node[stage2] (s2) at (9, 0) {Stage 2\\Layout\\Optimization};
+\node[outputbox, below=0.8cm of s2] (o2) {\ttfamily *\_2\_layout.json};
+
+% --- STAGE 3 ---
+\node[stage3] (s3) at (13.5, 0) {Stage 3\\Size\\Optimization};
+\node[outputbox, below=0.8cm of s3] (o3) {\ttfamily *\_3\_sized.json};
+
+% --- MAIN FLOW ARROWS ---
+\draw[arrow, color=black!70] (s0) -- (s1);
+\draw[arrow, color=black!70] (s1) -- (s2);
+\draw[arrow, color=black!70] (s2) -- (s3);
+
+% --- OUTPUT ARROWS (dashed) ---
+\draw[dashed arrow, color=black!40] (s0) -- (o0);
+\draw[dashed arrow, color=black!40] (s1) -- (o1);
+\draw[dashed arrow, color=black!40] (s2) -- (o2);
+\draw[dashed arrow, color=black!40] (s3) -- (o3);
+
+% --- ALGORITHM LABELS (above stages) ---
+\node[font=\sffamily\tiny\itshape, above=0.15cm of s0, anchor=south] {SIMP + OC};
+\node[font=\sffamily\tiny\itshape, above=0.15cm of s1, anchor=south] {Yin's Alg. + Graph};
+\node[font=\sffamily\tiny\itshape, above=0.15cm of s2, anchor=south] {Frame FEA + L-BFGS-B};
+\node[font=\sffamily\tiny\itshape, above=0.15cm of s3, anchor=south] {OC Method};
+
+% --- KEY METRICS (below outputs) ---
+\node[font=\sffamily\scriptsize, below=0.2cm of o0, anchor=north] {$\rho$, $\mathbf{t}$};
+\node[font=\sffamily\scriptsize, below=0.2cm of o1, anchor=north] {$\mathbf{G}$, nodes, edges};
+\node[font=\sffamily\scriptsize, below=0.2cm of o2, anchor=north] {$\mathbf{x}$ refined};
+\node[font=\sffamily\scriptsize, below=0.2cm of o3, anchor=north] {$\mathbf{r}$ optimized};
+
+\end{tikzpicture}
+\caption{Four-stage pipeline: from voxel density field (Stage 0) to parametric
+CAD-ready skeletal frame (Stage 3). Each stage outputs JSON; dashed arrows
+indicate data dependencies. Stage 0 solves topology optimization via SIMP;
+Stage 1 extracts graph via medial axis thinning; Stages 2--3 refine geometry
+and cross-sections via frame optimization.}
+\label{fig:pipeline}
+\end{figure}
+
+% ============================================================
+% REQUIRED PREAMBLE (add to document header if not present)
+% ============================================================
+% \usepackage{tikz}
+% \usetikzlibrary{shapes, arrows, positioning, shadows}
+% ============================================================

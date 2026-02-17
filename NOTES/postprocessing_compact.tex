@@ -1,0 +1,162 @@
+% ============================================================
+% COMPACT POST-PROCESSING VISUALIZATION
+% Cleaner, more compact version for document integration
+% ============================================================
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    scale=0.95,
+    node distance=1.5cm,
+    every label/.append style={font=\sffamily\tiny}
+]
+
+% Colors
+\definecolor{algo1}{RGB}{230, 126, 34}
+\definecolor{algo2}{RGB}{41, 128, 185}
+\definecolor{algo3}{RGB}{39, 174, 96}
+\definecolor{algo4}{RGB}{155, 89, 182}
+\definecolor{nodecolor}{RGB}{52, 73, 94}
+\definecolor{bccolor}{RGB}{155, 89, 182}
+\definecolor{removedcolor}{RGB}{231, 76, 60}
+
+% Styles
+\tikzset{
+    node_free/.style={circle, minimum size=6pt, fill=nodecolor, draw=nodecolor, line width=1pt},
+    node_bc/.style={circle, minimum size=7pt, fill=bccolor, draw=bccolor, line width=1.2pt},
+    edge/.style={line width=1.2pt, draw=black!40},
+    edge_var/.style={line width=1.2pt},
+    algo_box/.style={
+        rectangle,
+        rounded corners=2pt,
+        minimum width=2.5cm,
+        minimum height=0.8cm,
+        text centered,
+        text width=2.3cm,
+        font=\sffamily\small\bfseries,
+        draw,
+        line width=1.5pt
+    },
+    algo1box/.style={algo_box, fill=algo1!20, draw=algo1!70, text=algo1!80},
+    algo2box/.style={algo_box, fill=algo2!20, draw=algo2!70, text=algo2!80},
+    algo3box/.style={algo_box, fill=algo3!20, draw=algo3!70, text=algo3!80},
+    algo4box/.style={algo_box, fill=algo4!20, draw=algo4!70, text=algo4!80},
+    step_label/.style={font=\sffamily\scriptsize, text centered, text width=2.2cm},
+}
+
+% ============================================================
+% STEP 1: EDGE COLLAPSE
+% ============================================================
+\node[algo1box] (a1) at (0, 2) {Edge\\Collapse};
+\node[step_label, below=0.6cm of a1] (a1_param) {$d_{\text{collapse}}$};
+
+\node[node_bc] (n1_a) at (-0.4, 0.8) {};
+\node[node_free] (n1_b) at (0, 1) {};
+\node[node_free] (n1_c) at (0.4, 0.8) {};
+\node[node_bc] (n1_d) at (0.8, 1) {};
+
+\draw[edge] (n1_a) -- (n1_b);
+\draw[edge, line width=0.8pt] (n1_b) -- (n1_c); % short edge to be collapsed
+\draw[edge] (n1_c) -- (n1_d);
+
+\node[font=\sffamily\tiny, below=1.8cm of a1, text centered, text width=2.3cm] {
+    \small \textit{Merge short}\\
+    \small \textit{edges}
+};
+
+% ============================================================
+% STEP 2: BRANCH PRUNING
+% ============================================================
+\node[algo2box] (a2) at (3.5, 2) {Branch\\Pruning};
+\node[step_label, below=0.6cm of a2] (a2_param) {$l_{\text{prune}}$};
+
+\node[node_bc] (n2_a) at (3.1, 0.8) {};
+\node[node_free] (n2_b) at (3.5, 1) {};
+\node[node_free] (n2_c) at (3.9, 0.8) {};
+\node[node_bc] (n2_d) at (4.3, 1) {};
+\node[node_free] (n2_br) at (3.5, 1.5) {}; % branch to prune
+
+\draw[edge] (n2_a) -- (n2_b);
+\draw[edge] (n2_b) -- (n2_c);
+\draw[edge] (n2_c) -- (n2_d);
+\draw[edge, densely dotted, line width=0.8pt] (n2_b) -- (n2_br); % branch removed
+
+\node[font=\sffamily\tiny, below=1.8cm of a2, text centered, text width=2.3cm] {
+    \small \textit{Remove}\\
+    \small \textit{weak branches}
+};
+
+% ============================================================
+% STEP 3: RDP SIMPLIFICATION
+% ============================================================
+\node[algo3box] (a3) at (7, 2) {RDP\\Simplification};
+\node[step_label, below=0.6cm of a3] (a3_param) {$\varepsilon_{\text{rdp}}$};
+
+\node[node_bc] (n3_a) at (6.6, 0.8) {};
+\node[node_free] (n3_b) at (7, 1) {};
+\node[node_free] (n3_c) at (7.4, 0.8) {};
+\node[node_bc] (n3_d) at (7.8, 1) {};
+\node[node_free] (n3_m1) at (6.8, 0.95) {}; % intermediate point
+\node[node_free] (n3_m2) at (7.2, 0.85) {}; % intermediate point
+
+\draw[edge, dotted, line width=0.8pt] (n3_a) -- (n3_m1) -- (n3_m2) -- (n3_b); % many intermediate points
+\draw[edge] (n3_b) -- (n3_c);
+\draw[edge] (n3_c) -- (n3_d);
+
+\node[font=\sffamily\tiny, below=1.8cm of a3, text centered, text width=2.3cm] {
+    \small \textit{Reduce polyline}\\
+    \small \textit{points}
+};
+
+% ============================================================
+% STEP 4: RADIUS ESTIMATION (SINGLE BOX)
+% ============================================================
+\node[algo4box] (a4) at (10.5, 2) {Radius\\Estimation};
+
+\node[step_label, below=0.6cm of a4, text width=2.8cm] (a4_param) {
+    EDT: $r_v = \text{EDT}(v) \cdot h$ \\[2pt]
+    Uniform: $r = \sqrt{\frac{V_t}{\pi\sum L_i}}$
+};
+
+\node[node_bc] (n4_a) at (10.1, 0.8) {};
+\node[node_free] (n4_b) at (10.5, 1) {};
+\node[node_free] (n4_c) at (10.9, 0.8) {};
+\node[node_bc] (n4_d) at (11.3, 1) {};
+
+% Show variable thickness (EDT)
+\draw[edge_var, line width=2.2pt, draw=algo4] (n4_a) -- (n4_b);
+\draw[edge_var, line width=1.8pt, draw=algo4] (n4_b) -- (n4_c);
+\draw[edge_var, line width=2.4pt, draw=algo4] (n4_c) -- (n4_d);
+
+\node[font=\sffamily\tiny, below=1.8cm of a4, text centered, text width=2.3cm] {
+    \small \textit{Assign radii}\\
+    \small \textit{(variable or constant)}
+};
+
+% ============================================================
+% CONNECTING ARROWS
+% ============================================================
+\draw[->, line width=2pt, color=black!50] (a1) -- (a2);
+\draw[->, line width=2pt, color=black!50] (a2) -- (a3);
+\draw[->, line width=2pt, color=black!50] (a3) -- (a4);
+
+% ============================================================
+% LEGEND
+% ============================================================
+\node[rectangle, draw=black!25, line width=0.8pt, fill=white!90, inner sep=6pt,
+      text width=10.5cm, font=\sffamily\scriptsize, below=2.2cm of a3] {
+    \textbf{Legend:} \,
+    \tikz[baseline=(n.base)]{\node[node_bc, inner sep=1.2pt] (n) {};}  BC node \quad
+    \tikz[baseline=(n.base)]{\node[node_free, inner sep=1.2pt] (n) {};}  Free node \quad
+    Edge thickness represents radius (Algorithm~4 only)
+};
+
+\end{tikzpicture}
+
+\caption{\textbf{Four sequential post-processing algorithms.}
+(1)~Edge Collapse: merge nodes connected by edges shorter than $d_{\mathrm{collapse}}$.
+(2)~Branch Pruning: remove degree-1 branches with length $< l_{\mathrm{prune}}$, protecting BC nodes.
+(3)~RDP Simplification: reduce intermediate polyline points with tolerance $\varepsilon_{\mathrm{rdp}}$.
+(4)~Radius Estimation: assign cross-section radii via EDT (variable, geometry-based) or Uniform mode (constant, volume-conserving).}
+\label{fig:postprocessing}
+\end{figure}

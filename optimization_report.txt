@@ -2,20 +2,20 @@
           LAYOUT OPTIMIZATION REPORT
 ==================================================
 Status:             CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH
-Iterations:         33
+Iterations:         43
 --------------------------------------------------
 COMPLIANCE (Stiffness Inverse):
-  Initial:          141835.8810
-  Final:            107471.5959
-  Reduction:        34364.2851 (24.23%)
+  Initial:          76890.4520
+  Final:            76148.3822
+  Reduction:        742.0698 (0.97%)
 --------------------------------------------------
 VOLUME CHECK:
-  Initial Volume:   9758.6366 mm^3
-  Final Volume:     10655.7787 mm^3
-  Change:           897.1422 mm^3 (9.19%)
-  Target (Solid):   9984.0000 mm^3 (Diff: +6.73%)
+  Initial Volume:   9983.7229 mm^3
+  Final Volume:     10211.4518 mm^3
+  Change:           227.7289 mm^3 (2.28%)
+  Target (Solid):   9984.0000 mm^3 (Diff: +2.28%)
 --------------------------------------------------
 NODE MOVEMENT (Geometry Change):
-  Max Displacement: 5.7968 mm (Node 3)
-  Mean Displacement:4.0488 mm
+  Max Displacement: 5.0014 mm (Node 7)
+  Mean Displacement:2.5644 mm
 ==================================================

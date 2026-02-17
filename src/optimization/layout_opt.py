@@ -271,9 +271,9 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0, visu
     
     if len(nodes_clean) < len(nodes_new):
         print(f"[Layout] Snapped! Nodes reduced from {len(nodes_new)} to {len(nodes_clean)}")
-        return nodes_clean, edges_clean, radii_clean, tags_clean
+        return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, res.fun
     else:
-        return nodes_new, edges, radii, node_tags if node_tags else {}
+        return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, res.fun
 
 def snap_nodes(nodes, edges, radii, tol, locked_nodes=None, node_tags=None):
     """

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Sphinx documentation
+docs/_build/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Pipeline Outputs
+output/
+*.json
+*.npz
+*.stl
+*.txt
+!README.md
+!HYBRID_TEST_CASES.md
+
+# Logs
+*.log

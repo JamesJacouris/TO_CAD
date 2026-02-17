@@ -92,9 +92,8 @@ def _print_comparison_table(metrics_list, baseline_volume, target_volume):
     print(f" {'Iter':<5} | {'Stage':<8} | {'Compliance':<14} | {'Δ vs Prev':<10} | {'Volume (mm³)':<13} | {'Vol Err%':<9} | {'Geo. Score':<10} | {'Chamfer (mm)':<12} | {'Nodes':<6} | {'Edges':<6}")
     print("-"*130)
 
-    # Baseline row
-    vol_err = ((baseline_volume - target_volume) / target_volume * 100.0) if target_volume > 0 else 0.0
-    print(f" {'—':<5} | {'Baseline':<8} | {baseline_volume:>13.2f} | {'—':<10} | {baseline_volume:>12.2f} | {vol_err:>8.2f}% | {1.000:<10.3f} | {0.00:<12.2f} | {'—':<6} | {'—':<6}")
+    # Baseline row (structural target volume with 0% error)
+    print(f" {'—':<5} | {'Baseline':<8} | {baseline_volume:>13.2f} | {'—':<10} | {target_volume:>12.2f} | {0.00:>8.2f}% | {1.000:<10.3f} | {0.00:<12.2f} | {'—':<6} | {'—':<6}")
 
     prev_compliance = baseline_volume
     for row in metrics_list:

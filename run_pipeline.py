@@ -110,13 +110,24 @@ def _print_comparison_table(metrics_list, baseline_volume, target_volume):
 
     # Summary line
     if len(metrics_list) > 0:
-        final_compliance = metrics_list[-1]['c_size']
+        # Use the correct metric based on the final stage type
+        last_stage = metrics_list[-1]['stage']
+        final_compliance = metrics_list[-1]['c_layout'] if last_stage == 'Layout' else metrics_list[-1]['c_size']
         total_reduction = ((baseline_volume - final_compliance) / baseline_volume * 100.0) if baseline_volume > 0 else 0.0
         print(f"Total compliance reduction: {total_reduction:>6.2f}%  ({baseline_volume:.2f} → {final_compliance:.2f})")
 
-        final_volume = metrics_list[-1]['v_size']
-        vol_satisfied = "YES" if abs((final_volume - target_volume) / target_volume * 100.0) < 0.5 else "PARTIAL"
-        print(f"Volume constraint satisfied: {vol_satisfied}  (error < 0.5%)")
+        # Check volume constraint on the last size optimization (since layout expands volume)
+        last_size_idx = len(metrics_list) - 1
+        while last_size_idx >= 0 and metrics_list[last_size_idx]['stage'] != 'Size':
+            last_size_idx -= 1
+
+        if last_size_idx >= 0:
+            final_volume = metrics_list[last_size_idx]['v_size']
+            vol_err = abs((final_volume - target_volume) / target_volume * 100.0)
+            vol_satisfied = "YES" if vol_err < 0.5 else "PARTIAL"
+            print(f"Volume constraint satisfied: {vol_satisfied}  (error = {vol_err:.2f}%)")
+        else:
+            print(f"Volume constraint satisfied: N/A")
     print("="*130 + "\n")
 
 

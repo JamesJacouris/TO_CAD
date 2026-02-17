@@ -284,30 +284,90 @@ def main():
         suffix = f"_loop{loop_num}"
 
         print(f"\n{'='*60}")
-        print(f"  ITERATION {loop_num}: Layout + Size Optimisation")
+        print(f"  ITERATION {loop_num}: Size + Layout Optimisation")
         print(f"{'='*60}")
 
-        # --- STAGE 2: Layout Optimisation ---
+        # --- STAGE 3: Size Optimisation (FIRST) ---
+        print(f"\n[Iter {loop_num}] STAGE 3: Size Optimisation")
+        sized_json = os.path.join(args.output_dir, f"{base_name}_3_sized{suffix}.json")
+
+        try:
+            with open(current_json, 'r') as f:
+                size_input = json.load(f)
+
+            nodes_size = np.array(size_input['graph']['nodes'])
+            edges_raw = size_input['graph']['edges']
+            edges_size = np.array([[e[0], e[1]] for e in edges_raw], dtype=int)
+            radii_size = np.array([e[4] if len(e) >= 5 else e[2] for e in edges_raw])
+
+            # Create fresh problem config for size optimization
+            size_problem = TaggedProblem()
+            size_problem.load_tags_from_json(current_json)
+
+            radii_sized, c_size_init, c_size_final = optimize_size(
+                nodes_size, edges_size, radii_size, size_problem,
+                E=1000.0, vol_fraction=1.0, max_iter=args.iters,
+                visualize=args.visualize, target_volume_abs=target_volume
+            )
+
+            # Save size output (nodes/edges unchanged, only radii change)
+            sized_data = {
+                "metadata": size_input.get("metadata", {}),
+                "graph": {
+                    "nodes": nodes_size.tolist(),
+                    "edges": [[int(u), int(v), float(r)] for u, v, r in zip(edges_size[:, 0], edges_size[:, 1], radii_sized)],
+                    "node_tags": size_input['graph'].get('node_tags', {})  # Already strings from JSON
+                },
+                "curves": [],
+                "history": size_input.get("history", []),
+                "plates": []
+            }
+            with open(sized_json, 'w') as f:
+                json.dump(sized_data, f, indent=2)
+
+            v_sized = _frame_volume(nodes_size, edges_size, radii_sized)
+            geo_score_s, mean_chamfer_s = _geometric_likeness(baseline_nodes, nodes_size, domain_diagonal)
+
+            metrics_list.append({
+                'iter': loop_num,
+                'stage': 'Size',
+                'c_layout': 0.0,  # Placeholder
+                'c_size': c_size_final,
+                'v_layout': v_sized,
+                'v_size': v_sized,
+                'geo_score': geo_score_s,
+                'mean_chamfer': mean_chamfer_s,
+                'n_nodes': len(nodes_size),
+                'n_edges': len(edges_size),
+            })
+
+        except Exception as e:
+            print(f"[ERROR] Size Optimisation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+
+        # --- STAGE 2: Layout Optimisation (SECOND) ---
         print(f"\n[Iter {loop_num}] STAGE 2: Layout Optimisation")
         layout_json = os.path.join(args.output_dir, f"{base_name}_2_layout{suffix}.json")
 
         try:
-            with open(current_json, 'r') as f:
+            with open(sized_json, 'r') as f:
                 layout_input = json.load(f)
 
             nodes_layout = np.array(layout_input['graph']['nodes'])
             edges_raw = layout_input['graph']['edges']
             edges_layout = np.array([[e[0], e[1]] for e in edges_raw], dtype=int)
-            radii_layout = np.array([e[4] if len(e) >= 5 else e[2] for e in edges_raw])
+            radii_layout = np.array([e[2] for e in edges_raw])  # Simplified edges after size opt
             # Convert string keys from JSON to integer keys
             node_tags = {int(k): v for k, v in layout_input['graph'].get('node_tags', {}).items()}
 
-            # Create fresh problem config for each iteration to avoid tag pollution
-            iter_problem = TaggedProblem()
-            iter_problem.load_tags_from_json(current_json)
+            # Create fresh problem config for layout optimization
+            layout_problem = TaggedProblem()
+            layout_problem.load_tags_from_json(sized_json)
 
             nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final = optimize_layout(
-                nodes_layout, edges_layout, radii_layout, iter_problem,
+                nodes_layout, edges_layout, radii_layout, layout_problem,
                 E=1000.0, move_limit=args.limit, visualize=args.visualize,
                 target_volume_abs=target_volume, snap_dist=args.snap,
                 design_bounds=design_bounds, node_tags=node_tags
@@ -331,73 +391,25 @@ def main():
             v_layout = _frame_volume(nodes_opt, edges_opt, radii_opt)
             geo_score_l, mean_chamfer_l = _geometric_likeness(baseline_nodes, nodes_opt, domain_diagonal)
 
+            # Update metrics for layout opt
             metrics_list.append({
                 'iter': loop_num,
                 'stage': 'Layout',
                 'c_layout': c_layout_final,
-                'c_size': 0.0,  # Placeholder
+                'c_size': 0.0,  # From previous size
                 'v_layout': v_layout,
-                'v_size': v_layout,  # Will be updated in size opt
+                'v_size': v_layout,
                 'geo_score': geo_score_l,
                 'mean_chamfer': mean_chamfer_l,
                 'n_nodes': len(nodes_opt),
                 'n_edges': len(edges_opt),
             })
 
+            # Update for next iteration (feed layout output to next size)
+            current_json = layout_json
+
         except Exception as e:
             print(f"[ERROR] Layout Optimisation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return 1
-
-        # --- STAGE 3: Size Optimisation ---
-        print(f"\n[Iter {loop_num}] STAGE 3: Size Optimisation")
-        sized_json = os.path.join(args.output_dir, f"{base_name}_3_sized{suffix}.json")
-
-        try:
-            radii_sized, c_size_init, c_size_final = optimize_size(
-                nodes_opt, edges_opt, radii_opt, iter_problem,
-                E=1000.0, vol_fraction=1.0, max_iter=args.iters,
-                visualize=args.visualize, target_volume_abs=target_volume
-            )
-
-            # Save size output
-            sized_data = {
-                "metadata": layout_data.get("metadata", {}),
-                "graph": {
-                    "nodes": nodes_opt.tolist(),
-                    "edges": [[int(u), int(v), float(r)] for u, v, r in zip(edges_opt[:, 0], edges_opt[:, 1], radii_sized)],
-                    "node_tags": {str(k): v for k, v in tags_opt.items()}
-                },
-                "curves": [],
-                "history": layout_data.get("history", []),
-                "plates": []
-            }
-            with open(sized_json, 'w') as f:
-                json.dump(sized_data, f, indent=2)
-
-            v_sized = _frame_volume(nodes_opt, edges_opt, radii_sized)
-            geo_score_s, mean_chamfer_s = _geometric_likeness(baseline_nodes, nodes_opt, domain_diagonal)
-
-            # Update metrics for size opt
-            metrics_list.append({
-                'iter': loop_num,
-                'stage': 'Size',
-                'c_layout': 0.0,  # From previous layout
-                'c_size': c_size_final,
-                'v_layout': v_layout,
-                'v_size': v_sized,
-                'geo_score': geo_score_s,
-                'mean_chamfer': mean_chamfer_s,
-                'n_nodes': len(nodes_opt),
-                'n_edges': len(edges_opt),
-            })
-
-            # Update for next iteration
-            current_json = sized_json
-
-        except Exception as e:
-            print(f"[ERROR] Size Optimisation failed: {e}")
             import traceback
             traceback.print_exc()
             return 1
@@ -415,7 +427,7 @@ def main():
     # FINAL: Copy final output to requested name
     # ========================================
     final_path = os.path.join(args.output_dir, args.output)
-    shutil.copy2(stage3_out, final_path)
+    shutil.copy2(stage2_out, final_path)  # Now layout is the final stage
     
     # ========================================
     # Pipeline History (for FreeCAD)

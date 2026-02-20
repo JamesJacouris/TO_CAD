@@ -320,6 +320,12 @@ def main():
                 visualize=args.visualize, target_volume_abs=target_volume
             )
 
+            # Build curves from optimised nodes+edges for FreeCAD export
+            curves_sized = [
+                {"points": [list(nodes_size[u]) + [float(r)], list(nodes_size[v]) + [float(r)]]}
+                for (u, v), r in zip(edges_size, radii_sized)
+            ]
+
             # Save size output (nodes/edges unchanged, only radii change)
             sized_data = {
                 "metadata": size_input.get("metadata", {}),
@@ -328,7 +334,7 @@ def main():
                     "edges": [[int(u), int(v), float(r)] for u, v, r in zip(edges_size[:, 0], edges_size[:, 1], radii_sized)],
                     "node_tags": size_input['graph'].get('node_tags', {})  # Already strings from JSON
                 },
-                "curves": [],
+                "curves": curves_sized,
                 "history": size_input.get("history", []),
                 "plates": []
             }
@@ -383,6 +389,12 @@ def main():
                 design_bounds=design_bounds, node_tags=node_tags
             )
 
+            # Build curves from optimised nodes+edges for FreeCAD export
+            curves_layout = [
+                {"points": [list(nodes_opt[u]) + [float(r)], list(nodes_opt[v]) + [float(r)]]}
+                for (u, v), r in zip(edges_opt, radii_opt)
+            ]
+
             # Save layout output
             layout_data = {
                 "metadata": layout_input.get("metadata", {}),
@@ -391,7 +403,7 @@ def main():
                     "edges": [[int(u), int(v), 1.0, [], float(r)] for u, v, r in zip(edges_opt[:, 0], edges_opt[:, 1], radii_opt)],
                     "node_tags": {str(k): v for k, v in tags_opt.items()}
                 },
-                "curves": [],
+                "curves": curves_layout,
                 "history": layout_input.get("history", []),
                 "plates": []
             }

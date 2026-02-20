@@ -1,12 +1,8 @@
 """
-FreeCAD Macro: Hybrid Beam-Plate Reconstruction
-Crash-resistant version with proper error handling and batching.
-Includes history visualization, pipeline stages, and final geometry.
-
-Curved beam support: if a curve entry contains 'ctrl_pts' (two interior
-cubic Bézier control points), the beam is reconstructed as a smooth
-swept tube using Part.BezierCurve + makePipeShell instead of the
-ball-and-stick polyline approximation used for straight beams.
+FreeCAD Macro: Beam Reconstruction with Pipeline Stages
+All-stages viewer for the iterative layout + size optimisation pipeline.
+Beams are rendered as straight lines (start → end per beam).
+Includes history visualization and per-loop stage groups.
 """
 
 import FreeCAD
@@ -608,37 +604,25 @@ def import_hybrid_json(json_path=None):
 
                 for c_idx, curve in enumerate(stage.get("curves", [])):
                     pts = curve.get("points", [])
-                    ctrl_pts_json = curve.get("ctrl_pts", None)
-                    radius = curve.get("radius", None)
+                    if len(pts) < 2:
+                        continue
+                    try:
+                        p1 = Vector(pts[0][0], pts[0][1], pts[0][2])
+                        p2 = Vector(pts[-1][0], pts[-1][1], pts[-1][2])
+                        l_obj = doc.addObject("Part::Line", f"Beam_{folder_name}_{c_idx}")
+                        l_obj.X1, l_obj.Y1, l_obj.Z1 = p1.x, p1.y, p1.z
+                        l_obj.X2, l_obj.Y2, l_obj.Z2 = p2.x, p2.y, p2.z
+                        l_obj.ViewObject.LineWidth = 3.0
+                        l_obj.ViewObject.ShapeColor = color
+                        stage_grp.addObject(l_obj)
+                    except Exception as e:
+                        FreeCAD.Console.PrintWarning(f"  Stage beam {c_idx} failed: {str(e)[:40]}\n")
 
-                    if ctrl_pts_json and radius and len(pts) >= 2:
-                        # Curved beam in stage view
-                        pv0 = Vector(*pts[0][:3])
-                        pv3 = Vector(*pts[-1][:3])
-                        pv1 = Vector(*ctrl_pts_json[0])
-                        pv2 = Vector(*ctrl_pts_json[1])
-                        r = validate_radius(radius)
-                        shapes = create_curved_beam_sweep(pv0, pv1, pv2, pv3, r)
-                        if not shapes:
-                            shapes = create_rod_geometry_ball_stick(pts)
-                    elif len(pts) >= 2:
-                        shapes = create_rod_geometry_ball_stick(pts)
-                    else:
-                        shapes = []
-
-                    all_shapes.extend(shapes)
-                    if c_idx % 10 == 0:
+                    if c_idx % 20 == 0:
                         try:
                             FreeCAD.Gui.updateGui()
                         except:
                             pass
-
-                if all_shapes:
-                    compound = Part.makeCompound(all_shapes)
-                    obj = doc.addObject("Part::Feature", f"Rods_{folder_name}")
-                    obj.Shape = compound
-                    obj.ViewObject.ShapeColor = color
-                    stage_grp.addObject(obj)
 
                 for p_idx, plate in enumerate(stage.get("plates", [])):
                     verts = plate.get("vertices", [])
@@ -658,92 +642,39 @@ def import_hybrid_json(json_path=None):
                 FreeCAD.Console.PrintError(f"Stage {stage_idx} failed: {str(e)[:50]}\n")
 
     # -------------------------------------------------------------------------
-    # 1. MAIN GEOMETRY — Beams
+    # 1. MAIN GEOMETRY — Beams (straight lines, start → end)
     # -------------------------------------------------------------------------
-    skel_grp = doc.addObject("App::DocumentObjectGroup", "Ref_Skeleton_Final")
-    geo_grp  = doc.addObject("App::DocumentObjectGroup", "Beams_CSG_Final")
+    geo_grp = doc.addObject("App::DocumentObjectGroup", "Beams_Final")
 
     curves = data.get("curves", [])
-    beam_shape_registry = []  # [(shape, start_pos, end_pos, obj_name), ...]
 
     if curves:
         total_curves = len(curves)
-        curved_count = sum(1 for c in curves if 'ctrl_pts' in c)
-        FreeCAD.Console.PrintMessage(
-            f"Reconstructing {total_curves} beams "
-            f"({curved_count} curved Bézier, {total_curves - curved_count} straight)...\n"
-        )
+        FreeCAD.Console.PrintMessage(f"Reconstructing {total_curves} beams as straight lines...\n")
 
         for i, curve in enumerate(curves):
-            if i % 10 == 0:
-                FreeCAD.Console.PrintMessage(f"  Processing beam {i+1}/{total_curves}...\n")
+            if i % 20 == 0:
+                FreeCAD.Console.PrintMessage(f"  Beam {i+1}/{total_curves}...\n")
                 try:
                     FreeCAD.Gui.updateGui()
                 except:
                     pass
 
-            pts          = curve.get("points", [])
-            ctrl_pts_json = curve.get("ctrl_pts", None)   # [[x1,y1,z1],[x2,y2,z2]]
-            radius_json  = curve.get("radius", None)
-
-            if not pts:
+            pts = curve.get("points", [])
+            if len(pts) < 2:
                 continue
 
-            # --- Skeleton wireframe ---
             try:
-                v_start = doc.addObject("Part::Vertex", f"Ref_Node_S_{i}")
-                v_start.X, v_start.Y, v_start.Z = pts[0][0], pts[0][1], pts[0][2]
-                v_start.ViewObject.PointSize = 5.0
-                v_start.ViewObject.ShapeColor = (0.0, 1.0, 0.0)
-                skel_grp.addObject(v_start)
-
-                v_end = doc.addObject("Part::Vertex", f"Ref_Node_E_{i}")
-                v_end.X, v_end.Y, v_end.Z = pts[-1][0], pts[-1][1], pts[-1][2]
-                v_end.ViewObject.PointSize = 5.0
-                v_end.ViewObject.ShapeColor = (0.0, 1.0, 0.0)
-                skel_grp.addObject(v_end)
-
-                for j in range(len(pts) - 1):
-                    p1 = Vector(pts[j][0], pts[j][1], pts[j][2])
-                    p2 = Vector(pts[j + 1][0], pts[j + 1][1], pts[j + 1][2])
-                    l_obj = doc.addObject("Part::Line", f"Ref_L_{i}_{j}")
-                    l_obj.X1, l_obj.Y1, l_obj.Z1 = p1.x, p1.y, p1.z
-                    l_obj.X2, l_obj.Y2, l_obj.Z2 = p2.x, p2.y, p2.z
-                    l_obj.ViewObject.LineWidth = 2.0
-                    l_obj.ViewObject.ShapeColor = (1.0, 1.0, 0.0)
-                    skel_grp.addObject(l_obj)
+                p1 = Vector(pts[0][0], pts[0][1], pts[0][2])
+                p2 = Vector(pts[-1][0], pts[-1][1], pts[-1][2])
+                l_obj = doc.addObject("Part::Line", f"Beam_{i}")
+                l_obj.X1, l_obj.Y1, l_obj.Z1 = p1.x, p1.y, p1.z
+                l_obj.X2, l_obj.Y2, l_obj.Z2 = p2.x, p2.y, p2.z
+                l_obj.ViewObject.LineWidth = 3.0
+                l_obj.ViewObject.ShapeColor = (0.8, 0.4, 0.0)  # Orange
+                geo_grp.addObject(l_obj)
             except Exception as e:
-                FreeCAD.Console.PrintWarning(f"  Skeleton {i} failed: {str(e)[:40]}\n")
-
-            # --- Solid geometry ---
-            try:
-                if ctrl_pts_json and radius_json:
-                    # Curved beam: use smooth Bézier sweep
-                    pv0 = Vector(*pts[0][:3])
-                    pv3 = Vector(*pts[-1][:3])
-                    pv1 = Vector(*ctrl_pts_json[0])
-                    pv2 = Vector(*ctrl_pts_json[1])
-                    r   = validate_radius(radius_json)
-                    shapes = create_curved_beam_sweep(pv0, pv1, pv2, pv3, r)
-                    if not shapes:
-                        # Fallback to polyline ball-stick if sweep fails
-                        shapes = create_rod_geometry_ball_stick(pts)
-                else:
-                    # Straight beam: original ball-and-stick
-                    shapes = create_rod_geometry_ball_stick(pts)
-
-                start_pos = pts[0][:3]
-                end_pos   = pts[-1][:3]
-                for j, shape in enumerate(shapes):
-                    obj_name = f"Beam_{i}_P_{j}"
-                    obj = doc.addObject("Part::Feature", obj_name)
-                    obj.Shape = shape
-                    obj.ViewObject.ShapeColor = (0.8, 0.0, 0.0)
-                    geo_grp.addObject(obj)
-                    beam_shape_registry.append((shape.copy(), start_pos, end_pos, obj_name))
-
-            except Exception as e:
-                FreeCAD.Console.PrintWarning(f"  Beam geometry {i} failed: {str(e)[:40]}\n")
+                FreeCAD.Console.PrintWarning(f"  Beam {i} failed: {str(e)[:40]}\n")
 
     # -------------------------------------------------------------------------
     # 2. PLATES + JOINTS
@@ -865,20 +796,8 @@ def import_hybrid_json(json_path=None):
             except Exception as e:
                 FreeCAD.Console.PrintWarning(f"  Joint {j_idx} failed: {e}\n")
 
-    SNAP_DIST = 3.0
     beam_shapes_by_plate = {}
     beams_used_in_plates = set()
-
-    for plate_id, locs in joint_locs_by_plate.items():
-        beam_shapes_by_plate[plate_id] = []
-        for b_shape, b_start, b_end, b_name in beam_shape_registry:
-            for loc in locs:
-                d_start = sum((a - b) ** 2 for a, b in zip(b_start, loc)) ** 0.5
-                d_end   = sum((a - b) ** 2 for a, b in zip(b_end,   loc)) ** 0.5
-                if d_start < SNAP_DIST or d_end < SNAP_DIST:
-                    beam_shapes_by_plate[plate_id].append(b_shape)
-                    beams_used_in_plates.add(b_name)
-                    break
 
     if plate_shapes:
         if 'plate_grp' not in dir():

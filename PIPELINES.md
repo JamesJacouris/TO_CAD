@@ -245,28 +245,36 @@ python run_pipeline.py \
 
 ## 3. FreeCAD Macro Usage
 
-Both pipelines output JSON files compatible with the FreeCAD macro.
+### Running the Simple Beam-Only Macro (Current Branch)
 
-### Running the Macro
+This branch uses `freecad_import_simple.py` — an ultra-minimal, rock-solid macro optimized for iterative optimization output.
 
 1. **Open FreeCAD** and load the macro:
-   - **Macro → Load Macro → `src/export/freecad_reconstruct_stable_WORKING.py`**
+   - **Macro → Load Macro → `src/export/freecad_import_simple.py`**
 
 2. **Run the macro** — it will prompt you to:
    - Select the JSON file output from the pipeline
-   - Choose which geometry to visualize (structures, plates, beams, history, etc.)
+   - Creates red spheres for nodes, green lines for edges
 
-3. **Output in FreeCAD**:
-   - **Iterative optimization:** Frame geometry with ball-and-stick beams
-   - **Hybrid non-curved:** Extruded plate solids + ball-and-stick beams
-   - **Hybrid curved:** Extruded plate solids + **smooth Bézier-swept beam solids**
+3. **What it renders**:
+   - **Node spheres** (red) — sized by radius
+   - **Edge lines** (green) — connecting edges
+   - Updates every 20 nodes and 50 edges (no freezing)
+   - Auto-fits view to geometry
 
 ### Macro Features
-- ✅ History playback (Stage 0 voxels → Reconstruction → Optimized stages)
-- ✅ Boolean operations for plate holes
-- ✅ Ball-and-stick rendering for debugging
-- ✅ Curved beam Bézier lofting (when `ctrl_pts` present in JSON)
-- ✅ Batch processing with crash recovery
+- ✅ Ultra-simple geometry (no complex CSG)
+- ✅ Zero crash risk — uses only basic FreeCAD objects
+- ✅ Fast rendering even with 1000+ nodes
+- ✅ Clean, readable output (Nodes group + Edges group)
+- ✅ Perfect for iterative optimization output
+
+### Other Branches (Hybrid Macros)
+
+If you switch to `Hybrid_With_Curved_Beams_V2` or `feature/freecad-surface-reconstruction`:
+- Use `src/export/freecad_reconstruct_stable_WORKING.py` (if present on that branch)
+- Supports plates, curved beams, CSG operations, history playback
+- More complex but full-featured for hybrid structures
 
 ---
 
@@ -286,9 +294,9 @@ Both pipelines output JSON files compatible with the FreeCAD macro.
 ## 5. Troubleshooting
 
 ### "FreeCAD macro not found"
-- Ensure you're on a branch with `src/export/freecad_reconstruct_stable_WORKING.py`
-- Branches: `Hybrid_With_Curved_Beams_V2`, `feature/freecad-surface-reconstruction`, or `Top3D_V2_Iterative_Layout_and_Size_Optimisation` (now restored)
-- If missing: `git checkout feature/freecad-surface-reconstruction -- src/export/`
+- **Current branch** (`Top3D_V2_Iterative_Layout_and_Size_Optimisation`): Uses `src/export/freecad_import_simple.py` (beam-only, ultra-reliable)
+- **Other branches** (`Hybrid_With_Curved_Beams_V2`, `feature/freecad-surface-reconstruction`): Use `src/export/freecad_reconstruct_stable_WORKING.py` (hybrid-capable)
+- If missing: Switch to the branch first, then macro will be available
 
 ### Hybrid pipeline output is missing `plates` key
 - Ensure `--hybrid` flag is set

@@ -289,6 +289,10 @@ def main():
     metrics_list = []
     current_json = stage1_out
 
+    # Accumulate every stage in execution order for FreeCAD history export
+    all_stages = [{"name": "1. Reconstructed", "curves": baseline_data.get("curves", [])}]
+    final_curves = baseline_data.get("curves", [])  # Updated after each layout pass
+
     for loop_idx in range(args.opt_loops):
         loop_num = loop_idx + 1
         suffix = f"_loop{loop_num}"
@@ -340,6 +344,8 @@ def main():
             }
             with open(sized_json, 'w') as f:
                 json.dump(sized_data, f, indent=2)
+
+            all_stages.append({"name": f"Size Loop {loop_num}", "curves": curves_sized})
 
             v_sized = _frame_volume(nodes_size, edges_size, radii_sized)
             geo_score_s, mean_chamfer_s = _geometric_likeness(baseline_nodes, nodes_size, domain_diagonal)
@@ -410,6 +416,9 @@ def main():
             with open(layout_json, 'w') as f:
                 json.dump(layout_data, f, indent=2)
 
+            all_stages.append({"name": f"Layout Loop {loop_num}", "curves": curves_layout})
+            final_curves = curves_layout
+
             v_layout = _frame_volume(nodes_opt, edges_opt, radii_opt)
             geo_score_l, mean_chamfer_l = _geometric_likeness(baseline_nodes, nodes_opt, domain_diagonal)
 
@@ -455,25 +464,19 @@ def main():
     # Pipeline History (for FreeCAD)
     # ========================================
     try:
-        with open(stage1_out, 'r') as f: s1 = json.load(f)
-        with open(stage2_out, 'r') as f: s2 = json.load(f)
-        with open(stage3_out, 'r') as f: s3 = json.load(f)
-        
         history = {
-            "metadata": s3.get("metadata", {}),
-            "history": s1.get("history", []),
-            "stages": [
-                {"name": "1. Reconstructed", "curves": s1.get("curves", [])},
-                {"name": "2. Layout Optimised", "curves": s2.get("curves", [])},
-                {"name": "3. Size Optimised", "curves": s3.get("curves", [])},
-            ],
-            "curves": s2.get("curves", [])  # Layout is the final step
+            "metadata": baseline_data.get("metadata", {}),
+            "history": baseline_data.get("history", []),
+            "stages": all_stages,   # All loops in order: Reconstructed, Size 1, Layout 1, Size 2, Layout 2, ...
+            "curves": final_curves  # Final layout output
         }
-        
+
         hist_path = os.path.join(args.output_dir, f"{base_name}_history.json")
         with open(hist_path, 'w') as f:
             json.dump(history, f, indent=2)
-        print(f"\n[Export] Pipeline history: {hist_path}")
+        stage_names = [s["name"] for s in all_stages]
+        print(f"\n[Export] Pipeline history ({len(all_stages)} stages): {stage_names}")
+        print(f"         Saved to: {hist_path}")
     except Exception as e:
         print(f"[Warning] Could not create history: {e}")
     

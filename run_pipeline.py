@@ -467,7 +467,7 @@ def main():
                 {"name": "2. Layout Optimised", "curves": s2.get("curves", [])},
                 {"name": "3. Size Optimised", "curves": s3.get("curves", [])},
             ],
-            "curves": s3.get("curves", [])
+            "curves": s2.get("curves", [])  # Layout is the final step
         }
         
         hist_path = os.path.join(args.output_dir, f"{base_name}_history.json")

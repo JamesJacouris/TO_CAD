@@ -1,21 +1,21 @@
 ==================================================
           LAYOUT OPTIMIZATION REPORT
 ==================================================
-Status:             STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT
-Iterations:         50
+Status:             ABNORMAL: 
+Iterations:         49
 --------------------------------------------------
 COMPLIANCE (Stiffness Inverse):
-  Initial:          64978.6429
-  Final:            26763.4714
-  Reduction:        38215.1715 (58.81%)
+  Initial:          1666181.1537
+  Final:            1188052.3502
+  Reduction:        478128.8035 (28.70%)
 --------------------------------------------------
 VOLUME CHECK:
-  Initial Volume:   6251.8441 mm^3
-  Final Volume:     6747.6165 mm^3
-  Change:           495.7724 mm^3 (7.93%)
-  Target (Solid):   6252.0000 mm^3 (Diff: +7.93%)
+  Initial Volume:   685.9611 mm^3
+  Final Volume:     805.5220 mm^3
+  Change:           119.5609 mm^3 (17.43%)
+  Target (Solid):   686.0000 mm^3 (Diff: +17.42%)
 --------------------------------------------------
 NODE MOVEMENT (Geometry Change):
-  Max Displacement: 8.2259 mm (Node 9)
-  Mean Displacement:3.6934 mm
+  Max Displacement: 5.4337 mm (Node 10)
+  Mean Displacement:2.7028 mm
 ==================================================

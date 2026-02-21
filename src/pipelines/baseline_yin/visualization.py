@@ -220,7 +220,7 @@ def viz_loads(nodes, loads, bcs, scale=10.0):
                 arrow.rotate(R, center=[0,0,0])
             elif np.dot(z_axis, f_dir) < 0:
                  # 180 flip
-                 R = o3d.geometry.get_rotation_matrix_from_axis_angle([1,0,0] * np.pi) 
+                 R = o3d.geometry.get_rotation_matrix_from_axis_angle(np.array([1.0, 0.0, 0.0]) * np.pi)
                  arrow.rotate(R, center=[0,0,0])
                  
             arrow.translate(p)
@@ -238,6 +238,100 @@ def viz_loads(nodes, loads, bcs, scale=10.0):
              geoms.append(box)
              
     return geoms
+
+def viz_zone_classification(zone_mask, pitch, origin):
+    """
+    Visualizes zone classification: Beams in red, Plates in cyan.
+    zone_mask: 3D int array (1=plate, 2=beam, 0=background)
+    """
+    zone1_indices = np.argwhere(zone_mask == 1)
+    zone2_indices = np.argwhere(zone_mask == 2)
+
+    geoms = []
+
+    # Zone 1 = Plates (shown as CYAN)
+    if len(zone1_indices) > 0:
+        pts = origin + (zone1_indices * pitch) + (pitch * 0.5)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pts)
+        pcd.paint_uniform_color([0, 1, 1])  # CYAN for plates
+        geoms.append(pcd)
+
+    # Zone 2 = Beams (shown as RED)
+    if len(zone2_indices) > 0:
+        pts = origin + (zone2_indices * pitch) + (pitch * 0.5)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pts)
+        pcd.paint_uniform_color([1, 0, 0])  # RED for beams
+        geoms.append(pcd)
+
+    return geoms
+
+def save_zone_visualization(zone_mask, pitch, origin, output_path):
+    """
+    Save zone classification visualization as PNG image (top view and side views).
+    zone_mask: 3D int array with shape (Y, X, Z) matching Top3D convention.
+               Values: 1=plate, 2=beam, 0=background
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap
+
+        # Array is (Y, X, Z) — axis 0=Y, axis 1=X, axis 2=Z
+        indices = np.argwhere(zone_mask > 0)
+        if len(indices) == 0:
+            return False
+
+        y_min, x_min, z_min = indices.min(axis=0)
+        y_max, x_max, z_max = indices.max(axis=0)
+
+        # Create custom colormap: 0=white (bg), 1=cyan (plate), 2=red (beam)
+        colors = ['white', 'cyan', 'red']
+        cmap = ListedColormap(colors)
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+        # Top View (XY plane): slice at Z midpoint — looking down
+        z_mid = (z_min + z_max) // 2
+        slice_xy = zone_mask[:, :, z_mid]  # (Y, X) at fixed Z
+
+        im_xy = axes[0].imshow(slice_xy, cmap=cmap, origin='lower', vmin=0, vmax=2,
+                               extent=[x_min*pitch, (x_max+1)*pitch, y_min*pitch, (y_max+1)*pitch])
+        axes[0].set_title("Top View (XY plane)")
+        axes[0].set_xlabel("X (mm)")
+        axes[0].set_ylabel("Y (mm)")
+        plt.colorbar(im_xy, ax=axes[0], label="Zone (0=bg, 1=plate, 2=beam)", ticks=[0, 1, 2])
+
+        # Side View (XZ plane): slice at Y midpoint — looking from front
+        y_mid = (y_min + y_max) // 2
+        slice_xz = zone_mask[y_mid, :, :]  # (X, Z) at fixed Y
+
+        im_xz = axes[1].imshow(slice_xz.T, cmap=cmap, origin='lower', vmin=0, vmax=2,
+                               extent=[x_min*pitch, (x_max+1)*pitch, z_min*pitch, (z_max+1)*pitch])
+        axes[1].set_title("Side View (XZ plane)")
+        axes[1].set_xlabel("X (mm)")
+        axes[1].set_ylabel("Z (mm)")
+        plt.colorbar(im_xz, ax=axes[1], label="Zone (0=bg, 1=plate, 2=beam)", ticks=[0, 1, 2])
+
+        # Side View (YZ plane): slice at X midpoint — looking from side
+        x_mid = (x_min + x_max) // 2
+        slice_yz = zone_mask[:, x_mid, :]  # (Y, Z) at fixed X
+
+        im_yz = axes[2].imshow(slice_yz.T, cmap=cmap, origin='lower', vmin=0, vmax=2,
+                               extent=[y_min*pitch, (y_max+1)*pitch, z_min*pitch, (z_max+1)*pitch])
+        axes[2].set_title("Side View (YZ plane)")
+        axes[2].set_xlabel("Y (mm)")
+        axes[2].set_ylabel("Z (mm)")
+        plt.colorbar(im_yz, ax=axes[2], label="Zone (0=bg, 1=plate, 2=beam)", ticks=[0, 1, 2])
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+        return True
+    except Exception as e:
+        print(f"[Warning] Could not save zone visualization: {e}")
+        return False
 
 def viz_graph_radii(nodes, edges, radii):
     """

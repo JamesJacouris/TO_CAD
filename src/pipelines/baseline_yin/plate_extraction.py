@@ -440,15 +440,21 @@ def _extract_mid_surface(skel_voxels, edt, pitch, origin, bc_tags=None):
         return None
 
     # Try alpha shapes with increasing alpha until we get a mesh
+    # Suppress Open3D verbose warnings (flat plate skeletons trigger many)
     mesh = None
-    for alpha_mult in [2.0, 3.0, 5.0, 8.0]:
-        alpha = pitch * alpha_mult
-        try:
-            mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
-            if len(mesh.triangles) > 0:
-                break
-        except Exception:
-            continue
+    orig_level = o3d.utility.get_verbosity_level()
+    o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+    try:
+        for alpha_mult in [2.0, 3.0, 5.0, 8.0]:
+            alpha = pitch * alpha_mult
+            try:
+                mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
+                if len(mesh.triangles) > 0:
+                    break
+            except Exception:
+                continue
+    finally:
+        o3d.utility.set_verbosity_level(orig_level)
 
     if mesh is None or len(mesh.triangles) == 0:
         return None

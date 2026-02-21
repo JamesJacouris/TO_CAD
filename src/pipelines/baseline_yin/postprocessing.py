@@ -511,57 +511,9 @@ def ensure_nodes_at_bounding_extrema(nodes_dict, edges):
         
         if not covered:
             print(f"    Target {name} ({target_val:.1f}) needs a Node.")
-            
-            # 1. Try to SNAP an existing node first
-            # CRITICAL: Only snap nodes that are actually near the extremity region,
-            # not nodes that are far away geometrically on the other axes.
-            best_snap_dist = 9999.9
-            best_snap_nid = None
 
-            for nid, coord in new_nodes_dict.items():
-                # Primary check: distance on target axis
-                axis_dist = abs(coord[axis] - target_val)
-                if axis_dist >= snap_tol:
-                    continue
-
-                # Secondary check: ensure node is not far away on other axes
-                # (don't create long edges by snapping distant nodes)
-                geometrically_reasonable = True
-                for other_axis in range(3):
-                    if other_axis != axis:
-                        # Get the distribution of coordinates on this axis
-                        other_vals = [new_nodes_dict[nid2][other_axis] for nid2 in new_nodes_dict]
-                        other_min = min(other_vals)
-                        other_max = max(other_vals)
-                        other_range = other_max - other_min if other_min != other_max else 1.0
-
-                        # Node must be within reasonable bounds on other axes
-                        # Reject nodes that are more than 50% of geometry extent away from center
-                        center = (other_min + other_max) * 0.5
-                        dist_from_center = abs(coord[other_axis] - center)
-
-                        if dist_from_center > other_range * 0.5:
-                            geometrically_reasonable = False
-                            break
-
-                if not geometrically_reasonable:
-                    continue
-
-                if axis_dist < best_snap_dist:
-                    best_snap_dist = axis_dist
-                    best_snap_nid = nid
-
-            if best_snap_nid is not None:
-                # Move the node to the boundary plane!
-                print(f"      Snapping Node {best_snap_nid} to {name} (Dist={best_snap_dist:.2f} < {snap_tol})")
-                coord = new_nodes_dict[best_snap_nid]
-                # Update only the axis
-                if axis == 0: coord[0] = target_val
-                elif axis == 1: coord[1] = target_val
-                elif axis == 2: coord[2] = target_val
-                new_nodes_dict[best_snap_nid] = coord
-                # Mark as covered so we don't split
-                covered = True
+            # NOTE: Disabled node snapping to prevent creating long edges by moving
+            # distant nodes to boundary planes. The edge-splitting fallback is safer.
                 
         if not covered:
             # 2. Find best candidate point in edges (Split)

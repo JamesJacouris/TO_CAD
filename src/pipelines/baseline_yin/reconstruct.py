@@ -402,7 +402,12 @@ def main():
         geoms = viz_graph(nodes_arr, edges_list_raw)
         geoms.append(viz_voxels(skeleton, args.pitch, origin, [0.9, 0.8, 0.8], 0.3))
         show_step("3. Raw Graph + Skeleton Overlay", geoms)
-        
+
+    # Clean up spurious intermediate points that create loops
+    print(f"[3.5] Cleaning up edge polylines...")
+    from src.pipelines.baseline_yin.postprocessing import clean_edge_polylines
+    nodes_dict, edges_list_raw = clean_edge_polylines(nodes_dict, edges_list_raw)
+
     if args.collapse_thresh > 0:
         nodes_dict, edges_list_raw = collapse_short_edges(nodes_dict, edges_list_raw, args.collapse_thresh, node_tags=node_tags)
         capture_snapshot("4A_Collapsed", nodes_dict, edges_list_raw, plates=plates_data)

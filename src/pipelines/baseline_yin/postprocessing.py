@@ -1,6 +1,63 @@
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 
+def clean_edge_polylines(nodes_dict, edges):
+    """
+    Removes intermediate points that deviate significantly from the straight
+    line between edge endpoints. Fixes spurious skeleton loops.
+
+    nodes_dict: {id: [x, y, z]}
+    edges: list of [u, v, w, pts, rad...]
+    """
+    def point_to_line_distance(point, line_start, line_end):
+        """Compute perpendicular distance from point to line segment."""
+        v = line_end - line_start
+        w = point - line_start
+        c1 = np.dot(w, v)
+        if c1 <= 0:
+            return np.linalg.norm(w)
+        c2 = np.dot(v, v)
+        if c1 >= c2:
+            return np.linalg.norm(point - line_end)
+        b = c1 / c2
+        proj = line_start + b * v
+        return np.linalg.norm(point - proj)
+
+    cleaned_edges = []
+    max_perpendicular_error = 3.0  # Remove intermediate points >3mm from edge line
+
+    for e in edges:
+        u, v, w = e[0], e[1], e[2]
+        pts = e[3] if len(e) > 3 else []
+        rad = e[4] if len(e) > 4 else None
+
+        if len(pts) == 0:
+            # No intermediate points, keep edge as-is
+            cleaned_edges.append(e)
+            continue
+
+        # Filter intermediate points
+        p_start = np.array(nodes_dict[u], dtype=float)
+        p_end = np.array(nodes_dict[v], dtype=float)
+
+        filtered_pts = []
+        for pt in pts:
+            pt_arr = np.array(pt, dtype=float)
+            perp_error = point_to_line_distance(pt_arr, p_start, p_end)
+
+            # Keep only points that are close to the edge line
+            if perp_error <= max_perpendicular_error:
+                filtered_pts.append(pt)
+
+        # Rebuild edge with cleaned intermediate points
+        new_e = [u, v, w, filtered_pts]
+        if rad is not None:
+            new_e.append(rad)
+        cleaned_edges.append(new_e)
+
+    return nodes_dict, cleaned_edges
+
+
 def remove_isolated_nodes(nodes_dict, edges, node_tags=None):
     """
     Removes nodes that are statistical outliers (isolated far from main cluster).

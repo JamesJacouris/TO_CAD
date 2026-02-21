@@ -73,6 +73,7 @@ def viz_graph(node_coords, edges, node_color=[0,1,0], edge_color=[0,0,1]):
 def show_step(title, geometries):
     """
     Display a list of geometries in a window.
+    Skips rendering if Open3D visualization has issues.
     """
     valid_geoms = []
     for g in geometries:
@@ -80,17 +81,15 @@ def show_step(title, geometries):
             valid_geoms.extend(g)
         elif g is not None:
             valid_geoms.append(g)
-            
+
     if not valid_geoms:
         print(f"[Viz] {title}: Nothing to show.")
         return
 
-    print(f"[Viz] Showing: {title}")
-    # Add coordinate frame for reference
-    frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=10.0)
-    valid_geoms.append(frame)
-    
-    o3d.visualization.draw_geometries(valid_geoms, window_name=title)
+    print(f"[Viz] {title}")
+    # NOTE: Visualization is disabled to prevent hanging.
+    # If you need interactive visualization, run with saved snapshots instead.
+    return
 
 def viz_iterative_thinning(iter_map, pitch, origin):
     """

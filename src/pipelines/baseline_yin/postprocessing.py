@@ -441,10 +441,24 @@ def ensure_nodes_at_bounding_extrema(nodes_dict, edges):
     Checks if global min/max coordinates (X/Y/Z) are covered by Nodes.
     If an extremity lies on an edge (intermediate point), splits the edge there.
     Ensures tips (Min Y, Max Y, etc.) exist as physical Nodes for BC/Loading.
-    
+
     nodes_dict: {id: [x, y, z]}
     edges: list of [u, v, w, pts, rad...]
     """
+    def point_to_line_distance(point, line_start, line_end):
+        """Compute perpendicular distance from point to line segment."""
+        v = line_end - line_start
+        w = point - line_start
+        c1 = np.dot(w, v)
+        if c1 <= 0:
+            return np.linalg.norm(w)
+        c2 = np.dot(v, v)
+        if c1 >= c2:
+            return np.linalg.norm(point - line_end)
+        b = c1 / c2
+        proj = line_start + b * v
+        return np.linalg.norm(point - proj)
+
     print("  [Post] Checking Extremities for Node Coverage...")
     
     # 1. Collect all geometry points from edges (pts)
@@ -522,20 +536,38 @@ def ensure_nodes_at_bounding_extrema(nodes_dict, edges):
                 
         if not covered:
             # 2. Find best candidate point in edges (Split)
+            # VALIDATION: Only consider intermediate points close to the edge line
             best_dist = 9999.9
             best_cand = None # (e_idx, pt_idx)
-            
-            for key, val in edge_map.items():
-                dist = abs(val[axis] - target_val)
-                if dist < tol and dist < best_dist:
-                    best_dist = dist
-                    best_cand = key
-                    
+            max_perpendicular_error = 3.0  # Points must be within 3mm of edge line
+
+            for (e_idx, pt_idx), val in edge_map.items():
+                # First check: is this point near the target extremity?
+                axis_dist = abs(val[axis] - target_val)
+                if axis_dist >= tol:
+                    continue
+
+                # Second check: is this intermediate point geometrically reasonable?
+                # Check if it's close to the straight line between edge endpoints
+                u, v = edges[e_idx][0], edges[e_idx][1]
+                line_start = np.array(nodes_dict[u], dtype=float)
+                line_end = np.array(nodes_dict[v], dtype=float)
+                point = np.array(val, dtype=float)
+                perp_error = point_to_line_distance(point, line_start, line_end)
+
+                if perp_error > max_perpendicular_error:
+                    # This intermediate point is an outlier far from the edge line
+                    continue
+
+                if axis_dist < best_dist:
+                    best_dist = axis_dist
+                    best_cand = (e_idx, pt_idx)
+
             if best_cand:
                 e_idx, p_idx = best_cand
                 if e_idx not in marked_edges:
                     splits_todo.append((e_idx, p_idx, axis, target_val))
-                    marked_edges.add(e_idx) 
+                    marked_edges.add(e_idx)
                     print(f"      Splitting Edge {e_idx} at point {p_idx} (Dist={best_dist:.2f})")
     
     if not splits_todo:

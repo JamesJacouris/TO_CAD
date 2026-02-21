@@ -70,11 +70,14 @@ def viz_graph(node_coords, edges, node_color=[0,1,0], edge_color=[0,0,1]):
         
     return geoms
 
-def show_step(title, geometries):
+def show_step(title, geometries, timeout_seconds=10):
     """
-    Display a list of geometries in a window.
-    Skips rendering if Open3D visualization has issues.
+    Display a list of geometries in a window with auto-close timeout.
+    timeout_seconds: window auto-closes after this many seconds (0=no timeout)
     """
+    import threading
+    import time
+
     valid_geoms = []
     for g in geometries:
         if isinstance(g, list):
@@ -86,10 +89,40 @@ def show_step(title, geometries):
         print(f"[Viz] {title}: Nothing to show.")
         return
 
-    print(f"[Viz] {title}")
-    # NOTE: Visualization is disabled to prevent hanging.
-    # If you need interactive visualization, run with saved snapshots instead.
-    return
+    print(f"[Viz] {title} (auto-closes in {timeout_seconds}s or press ESC)")
+
+    # Add coordinate frame for reference
+    frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=10.0)
+    valid_geoms.append(frame)
+
+    def visualize_with_timeout():
+        """Visualize with automatic window close after timeout"""
+        try:
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(window_name=title, width=800, height=600)
+
+            for geom in valid_geoms:
+                vis.add_geometry(geom)
+
+            # Close automatically after timeout
+            if timeout_seconds > 0:
+                start_time = time.time()
+                while time.time() - start_time < timeout_seconds:
+                    vis.poll_events()
+                    vis.update_renderer()
+                    time.sleep(0.016)  # ~60 FPS
+                vis.destroy_window()
+            else:
+                vis.run()
+                vis.destroy_window()
+
+        except Exception as e:
+            print(f"  [Viz] Rendering failed: {e}")
+
+    # Run visualization in thread to prevent main thread blocking
+    viz_thread = threading.Thread(target=visualize_with_timeout, daemon=False)
+    viz_thread.start()
+    viz_thread.join(timeout=timeout_seconds + 5)  # Wait for viz to complete
 
 def viz_iterative_thinning(iter_map, pitch, origin):
     """

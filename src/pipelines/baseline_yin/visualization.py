@@ -8,7 +8,8 @@ def viz_voxels(mask, pitch, origin, color=[1, 0, 0], radius_scale=1.0):
     indices = np.argwhere(mask)
     if len(indices) == 0:
         return None
-        
+    # mask.shape = (nely, nelx, nelz); reorder cols to [nelx, nely, nelz] so world-X=length, world-Y=height
+    indices = indices[:, [1, 0, 2]]
     pts = origin + (indices * pitch) + (pitch * 0.5)
     
     pcd = o3d.geometry.PointCloud()
@@ -97,12 +98,13 @@ def viz_iterative_thinning(iter_map, pitch, origin):
     Visualizes voxels colored by the iteration they were removed.
     iter_map: 3D int array (0 = kept/bg, 1..N = removed iter)
     """
-    indices = np.argwhere(iter_map > 0)
-    if len(indices) == 0:
+    raw = np.argwhere(iter_map > 0)
+    if len(raw) == 0:
         return None
-        
+    iters = iter_map[raw[:,0], raw[:,1], raw[:,2]]
+    # Reorder cols [nely, nelx, nelz] → [nelx, nely, nelz]
+    indices = raw[:, [1, 0, 2]]
     pts = origin + (indices * pitch) + (pitch * 0.5)
-    iters = iter_map[indices[:,0], indices[:,1], indices[:,2]]
     
     # Normalize iterations to 0..1 for colormap
     max_it = np.max(iters)
@@ -132,10 +134,10 @@ def viz_skeleton_classification(skeleton, pitch, origin):
     indices = np.argwhere(skeleton > 0)
     if len(indices) == 0:
         return None
-        
-    pts = origin + (indices * pitch) + (pitch * 0.5)
+    # Reorder cols [nely, nelx, nelz] → [nelx, nely, nelz]
+    pts = origin + (indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)
     colors = []
-    
+
     # Compute neighbors for each point in the sparse set
     # Using a set lookup is fastest for sparse data
     voxel_set = set([tuple(idx) for idx in indices])
@@ -251,7 +253,7 @@ def viz_zone_classification(zone_mask, pitch, origin):
 
     # Zone 1 = Plates (shown as CYAN)
     if len(zone1_indices) > 0:
-        pts = origin + (zone1_indices * pitch) + (pitch * 0.5)
+        pts = origin + (zone1_indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(pts)
         pcd.paint_uniform_color([0, 1, 1])  # CYAN for plates
@@ -259,7 +261,7 @@ def viz_zone_classification(zone_mask, pitch, origin):
 
     # Zone 2 = Beams (shown as RED)
     if len(zone2_indices) > 0:
-        pts = origin + (zone2_indices * pitch) + (pitch * 0.5)
+        pts = origin + (zone2_indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(pts)
         pcd.paint_uniform_color([1, 0, 0])  # RED for beams

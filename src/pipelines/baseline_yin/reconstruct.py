@@ -233,7 +233,8 @@ def main():
         solid = (rho > args.vol_thresh).astype(bool)
         dims = solid.shape
         origin = np.array([0.0, 0.0, 0.0])
-        mesh_bounds = np.array([[0.0, 0.0, 0.0], [dims[0]*args.pitch, dims[1]*args.pitch, dims[2]*args.pitch]])
+        # dims = (nely, nelx, nelz); reorder to [nelx, nely, nelz] world coords
+        mesh_bounds = np.array([[0.0, 0.0, 0.0], [dims[1]*args.pitch, dims[0]*args.pitch, dims[2]*args.pitch]])
     else:
         print(f"[1] Voxelizing {args.input_mesh} (Pitch={args.pitch})...")
         solid, dims, origin, mesh_bounds = voxelize_mesh(args.input_mesh, args.pitch)
@@ -247,7 +248,10 @@ def main():
         history_snapshots.append({"type": "graph", "step": name, "nodes": n_list, "edges": e_list, "plates": plates if plates is not None else []})
 
     def capture_voxel_snapshot(name, mask, colors=None):
-        pts = origin + (np.argwhere(mask) * args.pitch) + (args.pitch * 0.5)
+        # mask.shape = (nely, nelx, nelz); reorder to [nelx, nely, nelz] world coords
+        raw = np.argwhere(mask)
+        reordered = raw[:, [1, 0, 2]]
+        pts = origin + (reordered * args.pitch) + (args.pitch * 0.5)
         if len(pts) > 50000: pts = pts[::2] 
         snapshot = {"type": "voxels", "step": name, "points": pts.tolist()}
         if colors is not None:
@@ -329,7 +333,7 @@ def main():
                 history_snapshots[i] = {
                     "type": "voxels",
                     "step": "2_Hybrid_Skeleton",
-                    "points": (origin + skeleton_coords * args.pitch + args.pitch * 0.5).tolist(),
+                    "points": (origin + skeleton_coords[:, [1, 0, 2]] * args.pitch + args.pitch * 0.5).tolist(),
                     "colors": colors.tolist()
                 }
                 break

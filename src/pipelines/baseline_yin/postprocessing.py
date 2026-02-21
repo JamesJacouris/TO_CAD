@@ -458,18 +458,20 @@ def compute_edge_radii(nodes, edges, edt_volume, pitch, origin):
         full_chain = np.vstack([p1, np.array(pts) if len(pts)>0 else np.empty((0,3)), p2])
         
         # Convert World Coords back to Voxel Indices for lookup
+        # World coords are [nelx, nely, nelz] but edt_volume.shape = (nely, nelx, nelz)
         # Index = (Coord - Origin - pitch/2) / pitch
-        indices = (full_chain - origin - (pitch * 0.5)) / pitch
-        indices = np.round(indices).astype(int)
-        
+        raw_indices = (full_chain - origin - (pitch * 0.5)) / pitch
+        raw_indices = np.round(raw_indices).astype(int)
+
         # Clip to volume bounds to be safe
-        D, H, W = edt_volume.shape
-        z = np.clip(indices[:, 0], 0, D-1)
-        y = np.clip(indices[:, 1], 0, H-1)
-        x = np.clip(indices[:, 2], 0, W-1)
-        
-        # Lookup EDT
-        radii_samples = edt_volume[z, y, x]
+        D, H, W = edt_volume.shape  # D=nely, H=nelx, W=nelz
+        # raw_indices[:, 0] = nelx index (world X), raw_indices[:, 1] = nely index (world Y)
+        nelx_idx = np.clip(raw_indices[:, 0], 0, H-1)
+        nely_idx = np.clip(raw_indices[:, 1], 0, D-1)
+        nelz_idx = np.clip(raw_indices[:, 2], 0, W-1)
+
+        # Lookup EDT using (nely, nelx, nelz) array indexing
+        radii_samples = edt_volume[nely_idx, nelx_idx, nelz_idx]
         
         # Compute Representative Radius
         # Median is robust to thin joints or thick centers

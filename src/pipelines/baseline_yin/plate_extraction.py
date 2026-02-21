@@ -136,7 +136,7 @@ def extract_plates(skeleton, surface_mask, solid, pitch, origin, beam_node_coord
         dilated_plate = binary_dilation(plate_voxels_mask, structure=np.ones((3, 3, 3)))
         intersection = dilated_plate & beam_skeleton
         conn_indices = np.argwhere(intersection)
-        connection_points = (origin + (conn_indices * pitch)).tolist()
+        connection_points = (origin + (conn_indices[:, [1, 0, 2]] * pitch)).tolist()
 
         plates_data.append({
             "id": int(label_id),
@@ -161,18 +161,21 @@ def _extract_boundary_faces(voxel_set, pitch, origin):
     face_dirs = [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)]
     all_faces = []
 
+    # voxel_set has tuples in (nely_idx, nelx_idx, nelz_idx) order
+    # World coords: [nelx, nely, nelz] (swap cols 0 and 1)
     for (vz, vy, vx) in voxel_set:
-        wp = origin + np.array([vz, vy, vx], dtype=float) * pitch
+        wp = origin + np.array([vy, vz, vx], dtype=float) * pitch  # [nelx, nely, nelz]
         for d in face_dirs:
-            dz, dy, dx = d
+            dz, dy, dx = d  # in voxel space: dz=dnely, dy=dnelx, dx=dnelz
             nz, ny, nx = vz + dz, vy + dy, vx + dx
             if (nz, ny, nx) not in voxel_set:
-                face_center = wp + np.array([dz, dy, dx], dtype=float) * (pitch * 0.5)
-                if dz != 0:
-                    t1, t2 = np.array([0.0, pitch, 0.0]), np.array([0.0, 0.0, pitch])
-                elif dy != 0:
+                # World offset: swap dnely and dnelx → [dy, dz, dx] = [dnelx, dnely, dnelz]
+                face_center = wp + np.array([dy, dz, dx], dtype=float) * (pitch * 0.5)
+                if dz != 0:   # face ⊥ nely(world-Y); spans nelx(world-X) and nelz(world-Z)
                     t1, t2 = np.array([pitch, 0.0, 0.0]), np.array([0.0, 0.0, pitch])
-                else:
+                elif dy != 0:  # face ⊥ nelx(world-X); spans nely(world-Y) and nelz(world-Z)
+                    t1, t2 = np.array([0.0, pitch, 0.0]), np.array([0.0, 0.0, pitch])
+                else:          # face ⊥ nelz(world-Z); spans nelx(world-X) and nely(world-Y)
                     t1, t2 = np.array([pitch, 0.0, 0.0]), np.array([0.0, pitch, 0.0])
                 p0 = face_center - 0.5 * t1 - 0.5 * t2
                 p1 = face_center + 0.5 * t1 - 0.5 * t2
@@ -325,7 +328,7 @@ def extract_plates_v2(plate_skeleton, plate_labels, solid, edt, pitch, origin,
 
         # --- Robust OBB (Oriented Bounding Box) ---
         # PCA on world-space points
-        world_centers = origin + (solid_indices * pitch) + (pitch * 0.5)
+        world_centers = origin + (solid_indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)
         mean_w = np.mean(world_centers, axis=0)
         centered_w = world_centers - mean_w
         cov = np.cov(centered_w, rowvar=False) if len(world_centers) > 2 else np.eye(3)
@@ -365,12 +368,12 @@ def extract_plates_v2(plate_skeleton, plate_labels, solid, edt, pitch, origin,
             plate_dilated = binary_dilation(plate_region, structure=s26)
             beam_at_interface = (zone_mask == 2) & plate_dilated  # zone==2 is beams
             conn_indices = np.argwhere(beam_at_interface)
-            connection_points = (origin + (conn_indices * pitch) + (pitch * 0.5)).tolist()
+            connection_points = (origin + (conn_indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)).tolist()
 
         # --- Skeleton Voxels (Topological / Post-Thinning) ---
         # We strictly follow the thinned_region (Step 2.5) to avoid over-counting
         skel_indices = np.argwhere((plate_skeleton > 0) & thinned_region)
-        world_skel_centers = origin + (skel_indices * pitch) + (pitch * 0.5)
+        world_skel_centers = origin + (skel_indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)
 
         plate_dict = {
             "id": int(label_id),
@@ -415,7 +418,8 @@ def _extract_mid_surface(skel_voxels, edt, pitch, origin, bc_tags=None):
         return None
 
     # Convert skeleton voxels to world coordinates (center of voxels)
-    points = origin + skel_voxels.astype(np.float64) * pitch + pitch * 0.5
+    # skel_voxels cols = [nely, nelx, nelz]; reorder to [nelx, nely, nelz]
+    points = origin + skel_voxels[:, [1, 0, 2]].astype(np.float64) * pitch + pitch * 0.5
     D, H, W = edt.shape
 
     if len(points) < 10:

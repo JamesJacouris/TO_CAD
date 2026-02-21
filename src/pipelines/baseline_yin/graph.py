@@ -453,9 +453,11 @@ def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
             if v_types[cz, cy, cx] > 0: v_types[cz, cy, cx] = 3 
     feature_indices = np.argwhere((v_types == 1) | (v_types == 3) | (v_types == 5))
     voxel_to_node, nodes, node_tags = {}, [], {}
+    # skeleton.shape = (nely, nelx, nelz) so argwhere gives (nely_idx, nelx_idx, nelz_idx)
+    # Reorder to (nelx, nely, nelz) world coords so world-X=length, world-Y=height, world-Z=depth
     for idx, (z, y, x) in enumerate(feature_indices):
         voxel_to_node[(z, y, x)] = idx
-        nodes.append(origin + (np.array([z, y, x]) * pitch) + (pitch * 0.5))
+        nodes.append(origin + (np.array([y, z, x]) * pitch) + (pitch * 0.5))  # [nelx, nely, nelz]
         if tags is not None and tags[z, y, x] > 0: node_tags[idx] = int(tags[z, y, x])
     edges, offsets, (D, H, W) = [], get_neighbor_offsets(), skeleton.shape
     for z_start, y_start, x_start in feature_indices:
@@ -471,8 +473,9 @@ def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
                         if (cz, cy, cx) != (z_start, y_start, x_start) and u_id < voxel_to_node[(cz, cy, cx)]:
                             v_id, inter_coords = voxel_to_node[(cz, cy, cx)], []
                             if len(path) > 2:
-                                inter_indices = np.array(path[1:-1])
-                                inter_coords = smooth_polyline(origin + (inter_indices * pitch) + (pitch * 0.5))
+                                inter_indices = np.array(path[1:-1])  # cols: [nely, nelx, nelz]
+                                inter_indices_reordered = inter_indices[:, [1, 0, 2]]  # → [nelx, nely, nelz]
+                                inter_coords = smooth_polyline(origin + (inter_indices_reordered * pitch) + (pitch * 0.5))
                             edges.append([u_id, v_id, float(len(path)-1), inter_coords])
                         break
                     found_next = False

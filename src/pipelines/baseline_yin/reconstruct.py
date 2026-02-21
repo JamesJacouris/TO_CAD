@@ -344,12 +344,7 @@ def main():
             except Exception as e:
                 print(f"  [Viz Warning] Zone classification visualization failed: {e}")
 
-            try:
-                skel_viz = viz_skeleton_classification(skeleton.astype(np.uint8), args.pitch, origin)
-                if skel_viz is not None:
-                    show_step("2c. Skeleton Classification", [skel_viz])
-            except Exception as e:
-                print(f"  [Viz Warning] Skeleton classification visualization failed: {e}")
+            # Skeleton classification viz skipped — transparent point cloud causes hang
 
         # [3a] Recover full-thickness plate regions from skeleton surface voxels
         print(f"[3a] Recovering plate regions from skeleton...")
@@ -397,7 +392,7 @@ def main():
                 record_iterations=True, mode=0, edt=edt_v
             )
             show_step("2a. Iterative Removal", [viz_iterative_thinning(iter_map, args.pitch, origin)])
-            show_step("2b. Skeleton Classification", [viz_skeleton_classification(skeleton, args.pitch, origin)])
+            # 2b skeleton classification viz skipped — transparent point cloud causes hang
         else:
             skeleton = thin_grid_yin(
                 solid.copy(), tags=bc_tags, max_iters=args.max_iters,

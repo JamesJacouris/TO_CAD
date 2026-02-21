@@ -72,8 +72,7 @@ def viz_graph(node_coords, edges, node_color=[0,1,0], edge_color=[0,0,1]):
 
 def show_step(title, geometries):
     """
-    Log visualization step (actual rendering disabled due to Open3D instability).
-    Output geometry is saved in JSON format for visualization in FreeCAD.
+    Display a list of geometries in a window.
     """
     valid_geoms = []
     for g in geometries:
@@ -86,9 +85,12 @@ def show_step(title, geometries):
         print(f"[Viz] {title}: Nothing to show.")
         return
 
-    # Just log what would be visualized
-    # 3D geometry is available in the output JSON file for FreeCAD visualization
-    print(f"[Viz] {title}")
+    print(f"[Viz] Showing: {title}")
+    # Add coordinate frame for reference
+    frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=10.0)
+    valid_geoms.append(frame)
+
+    o3d.visualization.draw_geometries(valid_geoms, window_name=title)
 
 def viz_iterative_thinning(iter_map, pitch, origin):
     """

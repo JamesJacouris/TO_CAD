@@ -261,7 +261,10 @@ def main():
     capture_voxel_snapshot("1_Initial_Voxels", solid)
     
     if args.visualize:
-        show_step("1. Initial Voxel Volume", [viz_voxels(solid, args.pitch, origin, [0.8, 0.8, 0.8])])
+        try:
+            show_step("1. Initial Voxel Volume", [viz_voxels(solid, args.pitch, origin, [0.8, 0.8, 0.8])])
+        except Exception as e:
+            print(f"  [Viz Warning] Initial voxel visualization failed: {e}")
         
     # ===================================================================
     # HYBRID vs PURE BEAM PATH
@@ -286,7 +289,10 @@ def main():
                 solid.copy(), tags=bc_tags, max_iters=args.max_iters,
                 record_iterations=True, mode=3, edt=edt_v
             )
-            show_step("2. Hybrid Thinning (Surface + Curve)", [viz_iterative_thinning(iter_map, args.pitch, origin)])
+            try:
+                show_step("2. Hybrid Thinning (Surface + Curve)", [viz_iterative_thinning(iter_map, args.pitch, origin)])
+            except Exception as e:
+                print(f"  [Viz Warning] Thinning visualization failed: {e}")
         else:
             skeleton = thin_grid_yin(
                 solid.copy(), tags=bc_tags, max_iters=args.max_iters,
@@ -332,9 +338,18 @@ def main():
             print(f"  -> Zone visualization saved: {viz_path}")
 
         if args.visualize:
-            zone_geoms = viz_zone_classification(zone_mask, args.pitch, origin)
-            show_step("2.5. Post-Thinning Classification (Red=Beams, Cyan=Plates)", zone_geoms)
-            show_step("2c. Skeleton Classification", [viz_skeleton_classification(skeleton.astype(np.uint8), args.pitch, origin)])
+            try:
+                zone_geoms = viz_zone_classification(zone_mask, args.pitch, origin)
+                show_step("2.5. Post-Thinning Classification (Red=Beams, Cyan=Plates)", zone_geoms)
+            except Exception as e:
+                print(f"  [Viz Warning] Zone classification visualization failed: {e}")
+
+            try:
+                skel_viz = viz_skeleton_classification(skeleton.astype(np.uint8), args.pitch, origin)
+                if skel_viz is not None:
+                    show_step("2c. Skeleton Classification", [skel_viz])
+            except Exception as e:
+                print(f"  [Viz Warning] Skeleton classification visualization failed: {e}")
 
         # [3a] Recover full-thickness plate regions from skeleton surface voxels
         print(f"[3a] Recovering plate regions from skeleton...")

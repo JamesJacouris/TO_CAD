@@ -5,16 +5,16 @@ Status:             Max Iters Reached
 Iterations:         49
 --------------------------------------------------
 COMPLIANCE (Stiffness Inverse):
-  Initial:          7.6107e+04
-  Final:            7.6730e+04
-  Reduction:        -6.2228e+02 (-0.82%)
+  Initial:          2.7189e+05
+  Final:            6.7725e+04
+  Reduction:        2.0417e+05 (75.09%)
 --------------------------------------------------
 VOLUME CHECK (Constraint):
-  Initial Volume:   10204.2899 mm^3
-  Final Volume:     9983.7229 mm^3
-  Change:           -220.5671 mm^3 (-2.16%)
+  Initial Volume:   5780.4896 mm^3
+  Final Volume:     6251.8441 mm^3
+  Change:           471.3545 mm^3 (8.15%)
 --------------------------------------------------
 RADIUS STATISTICS (Design Variables):
-  Max Change:       0.1109 mm
-  Mean Change:      0.0594 mm
+  Max Change:       2.9021 mm
+  Mean Change:      1.5086 mm
 ==================================================

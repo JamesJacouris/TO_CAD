@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import cg
+from scipy.spatial import cKDTree
 import time
 
 def lk_H8(nu):
@@ -93,7 +94,20 @@ class Top3D:
         
         self.x = np.full((nely, nelx, nelz), volfrac)
         self.xPhys = self.x.copy()
-        
+
+        # Passive void elements (always zero density)
+        self.passive_void = None
+
+    def set_passive_void(self, mask):
+        """
+        Set a boolean mask (nely, nelx, nelz) of elements that are forced to
+        zero density (void) throughout optimization.
+        """
+        self.passive_void = mask.astype(bool)
+        # Pre-zero the initial densities so the first FE solve is consistent
+        self.x[self.passive_void] = 0.0
+        self.xPhys[self.passive_void] = 0.0
+
     def set_load(self, load_dof, magnitude):
         self.f[load_dof] = magnitude
         
@@ -142,99 +156,81 @@ class Top3D:
 
     def optimize(self, max_loop=200, tolx=0.01):
         KE = lk_H8(0.3)
-        
-        # Prepare Filter
+
+        # Prepare Filter (KD-Tree vectorized)
         print("Preparing Filter...")
-        H, Hs = self._prepare_filter()
-        
-        # Precompute EdofMat
+        t0 = time.time()
+        H, Hs = self._prepare_filter_kdtree()
+        print(f"Filter prepared in {time.time()-t0:.2f}s")
+
+        # Precompute EdofMat (vectorized)
         print("Preparing EdofMat...")
-        edofMat, iK, jK = self._prepare_edof_mat()
-        
+        edofMat, iK, jK = self._prepare_edof_mat_vectorized()
+
         # Main Loop
         loop = 0
         change = 1.0
-        
+
         print(f"Starting Optimization (Mesh: {self.nelx}x{self.nely}x{self.nelz})")
-        
+
         start_time = time.time()
-        
+
         while change > tolx and loop < max_loop:
             loop += 1
-            
-            # FE Analysis
-            # sK = (KE(:) * (Emin + xPhys(:)'.^penal * (E0-Emin)))
-            # Simplified: E0=1, Emin=1e-9 -> approx x^p
-            
-            # flattened xPhys (column-major to match MATLAB if needed, but here consisteny matters)
-            # construction of iK/jK assumes edofMat order. 
-            # edofMat was built iterating (k, i, j). 
-            # xPhys is (ny, nx, nz). 
-            # We need to flatten xPhys in the SAME order as the element iteration in edofMat.
-            # In edofMat calc: for k.. for i.. for j..
-            # xPhys[j, i, k] correspond to that order.
-            # So xPhys.flatten(order='F') walks j, then i, then k?
-            # Numpy 'F' order: first index changes fastest.
-            # xPhys shape (ny, nx, nz). 'F' order: j changes, then i, then k.
-            # YES. This matches edofMat loop order!
-            
+
+            # xPhys flattened in F-order matches edofMat element ordering
             x_flat = self.xPhys.flatten(order='F')
-            
-            # E0=1, Emin=1e-9
+
             Emin = 1e-9
             E0 = 1.0
-            
-            # sK shape: (24*24) x nele
-            # We want 1D array of all values
-            filt_stiff = Emin + x_flat**self.penal * (E0 - Emin) 
+
+            filt_stiff = Emin + x_flat**self.penal * (E0 - Emin)
             sK = (KE.flatten()[:, np.newaxis] @ filt_stiff[np.newaxis, :]).flatten(order='F')
-            
+
             K = sp.coo_matrix((sK, (iK, jK)), shape=(self.ndof, self.ndof)).tocsc()
             K = (K + K.T) / 2.0
-            
-            # Solve
-            # Partitioning
+
+            # Solve with CG + Jacobi preconditioner
             free_dofs = np.setdiff1d(np.arange(self.ndof), self.fixed_dofs)
-            
-            # Solve K_ff * u_f = f_f
-            # Note: For large systems, use iterative solver or cholesky?
-            # spsolve is direct LU. Fine for small/med.
-            
-            u_free = spsolve(K[free_dofs, :][:, free_dofs], self.f[free_dofs])
-            
+            K_free = K[free_dofs, :][:, free_dofs]
+            f_free = self.f[free_dofs].flatten()
+            M = sp.diags(1.0 / K_free.diagonal())
+            u_free, info = cg(K_free, f_free, M=M, rtol=1e-5, maxiter=5000)
+            if info > 0:
+                print(f"  Warning: CG did not converge (info={info})")
+
             u = np.zeros(self.ndof)
             u[free_dofs] = u_free
-            
-            # Objective & Sensitivity
-            # ce = sum((U(edofMat)*KE).*U(edofMat), 2)
-            
-            # u[edofMat] shape: (nele, 24)
-            u_ele = u[edofMat] 
-            
-            # (u_ele @ KE) * u_ele -> element-wise mult sum?
-            # Matlab: sum((U(edofMat)*KE).*U(edofMat), 2)
-            # U*KE is matrix mult (nele x 24) * (24 x 24) -> (nele x 24)
-            # .* is elementwise. sum(, 2) is sum rows.
-            
+
+            # Sensitivity Analysis
+            u_ele = u[edofMat]
             ce = np.sum((u_ele @ KE) * u_ele, axis=1)
             c = np.sum((Emin + x_flat**self.penal * (E0 - Emin)) * ce)
-            
+
             dc = -self.penal * (E0 - Emin) * x_flat**(self.penal - 1) * ce
             dv = np.ones(self.nele)
-            
-            # Filtering Sensitivities
-            # dc(:) = H*(dc(:)./Hs);
+
+            # Filter Sensitivities
             dc[:] = H @ (dc / Hs)
             dv[:] = H @ (dv / Hs)
             
             # Optimality Criteria
             xnew_flat = self._optimality_criteria(x_flat, dc, dv)
             xnew = xnew_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-            
+
+            # Enforce passive void (always zero density)
+            if self.passive_void is not None:
+                xnew[self.passive_void] = 0.0
+                xnew_flat = xnew.flatten(order='F')
+
             # Filter Design Variable
             # xPhys(:) = (H*xnew(:))./Hs
             xPhys_flat = H @ xnew_flat / Hs
             self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
+
+            # Re-enforce passive void on physical density (filter can smear)
+            if self.passive_void is not None:
+                self.xPhys[self.passive_void] = 1e-9
             
             change = np.max(np.abs(xnew - self.x))
             self.x = xnew
@@ -244,115 +240,62 @@ class Top3D:
         print(f"Optimization Converged in {time.time() - start_time:.2f}s")
         return self.xPhys
 
-    def _prepare_edof_mat(self):
-        # Python port of edofMat generation
-        # Careful with 0-based indexing and C vs F ordering
-        
-        # Node Grid (nodegrd in matlab)
-        # In MATLAB: reshape(1:(nely+1)*(nelx+1), nely+1, nelx+1)
-        # Means node IDs increase down columns (Y), then across rows (X).
-        
+    def _prepare_edof_mat_vectorized(self):
+        """Vectorized DOF matrix construction (8 passes, one per voxel corner)."""
         nx, ny, nz = self.nelx, self.nely, self.nelz
-        
-        # 3D Node Grid
-        # Create 3D array of Node IDs matching MATLAB ordering
-        node_ids = np.arange((ny + 1) * (nx + 1) * (nz + 1)).reshape((nx+1, nz+1, ny+1)) 
-        # Wait, Matlab:
-        # nodegrd is (nely+1) x (nelx+1). 
-        # nodeids = reshape(nodegrd(1:end-1,1:end-1), nely*nelx, 1)
-        # This implies standard column-major element walking.
-        
-        # Let's replicate MATLAB's vector math exactly for safety
-        # Elements are indexed 1..nele walking Y, then X, then Z
-        
-        elx = np.repeat(np.arange(nx), ny)
-        ely = np.tile(np.arange(ny), nx)
-        # elx, ely for one slice (Z=0)
-        
-        # Nodes for element at (x,y,z)
-        # n1 = (nely+1)*x + y + 1 (in matlab 1-based, here 0-based: (nely+1)*x + y)
-        # Let's verify.
-        
-        n_per_slice = (nx + 1) * (ny + 1)
-        
+        n_node = (nx + 1) * (ny + 1) * (nz + 1)
+        # F-order reshape: index order (ny+1, nx+1, nz+1)
+        node_grid = np.arange(n_node).reshape((ny + 1, nx + 1, nz + 1), order='F')
+        # Base node (corner 0) for every element
+        node_base = node_grid[:-1, :-1, :-1].flatten(order='F')
+
+        # Stride offsets in F-order node numbering
+        sy = 1            # step in Y (fastest index)
+        sx = ny + 1       # step in X
+        sz = (ny + 1) * (nx + 1)  # step in Z
+        offsets = np.array([0, sx, sx + sy, sy, sz, sx + sz, sx + sy + sz, sy + sz])
+
         edofMat = np.zeros((self.nele, 24), dtype=int)
-        
-        elem_idx = 0
-        for k in range(nz):
-            for i in range(nx):
-                for j in range(ny):
-                    # Base node (top-left-front of element)
-                    # Coordinates in node grid: i, j, k
-                    # ID = k * n_per_slice + i * (ny + 1) + j
-                    
-                    n1 = k * n_per_slice + i * (ny + 1) + j
-                    n2 = k * n_per_slice + (i + 1) * (ny + 1) + j
-                    n3 = k * n_per_slice + (i + 1) * (ny + 1) + (j + 1)
-                    n4 = k * n_per_slice + i * (ny + 1) + (j + 1)
-                    
-                    n5 = (k + 1) * n_per_slice + i * (ny + 1) + j
-                    n6 = (k + 1) * n_per_slice + (i + 1) * (ny + 1) + j
-                    n7 = (k + 1) * n_per_slice + (i + 1) * (ny + 1) + (j + 1)
-                    n8 = (k + 1) * n_per_slice + i * (ny + 1) + (j + 1)
-                    
-                    # DOFs: 3*n, 3*n+1, 3*n+2
-                    nodes = [n1, n2, n3, n4, n5, n6, n7, n8]
-                    dofs = []
-                    for n in nodes:
-                        dofs.extend([3*n, 3*n+1, 3*n+2])
-                        
-                    edofMat[elem_idx, :] = dofs
-                    elem_idx += 1
-                    
+        for i in range(8):
+            nodes = node_base + offsets[i]
+            edofMat[:, 3 * i]     = 3 * nodes
+            edofMat[:, 3 * i + 1] = 3 * nodes + 1
+            edofMat[:, 3 * i + 2] = 3 * nodes + 2
+
         iK = np.kron(edofMat, np.ones((24, 1))).flatten()
         jK = np.kron(edofMat, np.ones((1, 24))).flatten()
-        
         return edofMat, iK, jK
 
-    def _prepare_filter(self):
-        # Standard distance filter
-        nele = self.nele
+    def _prepare_filter_kdtree(self):
+        """KD-Tree filter preparation — replaces 6-nested-loop version."""
         nx, ny, nz = self.nelx, self.nely, self.nelz
         rmin = self.rmin
-        
-        iH = []
-        jH = []
-        sH = []
-        
-        # To speed up, stick to loops or numba. Pure python loop sets are slow for large mesh.
-        # But for 60x20x4 type meshes, it's fine.
-        
-        # Using element centroid distance
-        # Current element e1 at (x,y,z)
-        # Neighbor e2 at (i,j,k)
-        
-        elem_idx = 0
-        for k1 in range(nz):
-            for i1 in range(nx):
-                for j1 in range(ny):
-                    e1 = elem_idx
-                    
-                    # Search window
-                    min_i = max(i1 - int(np.floor(rmin)) - 1, 0)
-                    max_i = min(i1 + int(np.floor(rmin)) + 1, nx)
-                    min_j = max(j1 - int(np.floor(rmin)) - 1, 0)
-                    max_j = min(j1 + int(np.floor(rmin)) + 1, ny)
-                    min_k = max(k1 - int(np.floor(rmin)) - 1, 0)
-                    max_k = min(k1 + int(np.floor(rmin)) + 1, nz)
-                    
-                    for k2 in range(min_k, max_k):
-                        for i2 in range(min_i, max_i):
-                            for j2 in range(min_j, max_j):
-                                e2 = k2 * (nx * ny) + i2 * ny + j2
-                                dist = np.sqrt((i1 - i2)**2 + (j1 - j2)**2 + (k1 - k2)**2)
-                                
-                                if dist < rmin:
-                                    iH.append(e1)
-                                    jH.append(e2)
-                                    sH.append(rmin - dist)
-                                    
-                    elem_idx += 1
-                    
+        nele = self.nele
+
+        # Element centroids in F-order (matches xPhys.flatten(order='F'))
+        y_range = np.arange(ny) + 0.5
+        x_range = np.arange(nx) + 0.5
+        z_range = np.arange(nz) + 0.5
+        yy, xx, zz = np.meshgrid(y_range, x_range, z_range, indexing='ij')
+        centroids = np.column_stack([
+            xx.flatten(order='F'),
+            yy.flatten(order='F'),
+            zz.flatten(order='F'),
+        ])
+
+        tree = cKDTree(centroids)
+        indices = tree.query_ball_point(centroids, rmin)
+
+        iH, jH, sH = [], [], []
+        for i, neighbors in enumerate(indices):
+            if not neighbors:
+                continue
+            dists = np.linalg.norm(centroids[neighbors] - centroids[i], axis=1)
+            weights = np.maximum(0, rmin - dists)
+            iH.extend([i] * len(neighbors))
+            jH.extend(neighbors)
+            sH.extend(weights)
+
         H = sp.coo_matrix((sH, (iH, jH)), shape=(nele, nele)).tocsc()
         Hs = np.array(H.sum(axis=1)).flatten()
         return H, Hs

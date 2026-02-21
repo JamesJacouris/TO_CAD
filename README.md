@@ -110,3 +110,56 @@ python run_pipeline.py \
     --prune_len 2.0 --collapse_thresh 3.0 --rdp 2.0 --radius_mode uniform \
     --limit 5.0 --snap 5.0 --visualize \
     --output "short_cantilever.json"
+
+
+
+
+
+python run_pipeline.py \
+  --nelx 150 --nely 40 --nelz 4 \
+  --volfrac 0.3 --penal 3.0 --rmin 3.0 --max_loop 100 \
+  --load_x 150 --load_y 20 --load_z 2 \
+  --load_fx 0.0 --load_fy -100.0 --load_fz 0.0 \
+  --pitch 1.0 \
+  --max_iters 50 \
+  --prune_len 4.15 \
+  --collapse_thresh 3.84 \
+  --rdp 0.78 \
+  --radius_mode uniform \
+  --vol_thresh 0.3 \
+  --limit 5.0 \
+  --snap 5.0 \
+  --iters 50 \
+  --opt_loops 2 \
+  --problem tagged \
+  --output_dir output/hybrid_v2 \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/matlab_replicated_top3d.npz \
+  --visualize \
+  --output matlab_replicated.json
+
+
+
+  run_top3d_rocker_arm.py — new dedicated script
+Domain defaults match Yin's paper: 75 × 60 × 12, volfrac=0.085, penal=3, rmin=3, 100 iterations.
+
+BC / Load	Position	What
+Rear clamped joints	x=0, full Y range, all Z	All 3 DOFs fixed
+Front Y-restricted	x=75, full Y range, all Z	Y DOF only fixed
+200 N load (symmetric)	x=37, y=60 (top), z=0 & z=12	−100 N each
+100 N load (symmetric)	x=75 (front), y=30, z=0 & z=12	−50 N each
+Passive void	x=[20..50), y=[5..28), all Z	Motor/pump opening
+All positions are configurable via fractional arguments (--void_x0 0.27, --load200_y 1.0, etc.). Run it with:
+
+
+# Quick start (all defaults)
+python run_top3d_rocker_arm.py
+
+# Then reconstruct the skeleton
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/rocker_arm_top3d.npz \
+  --nelx 75 --nely 60 --nelz 12 \
+  --vol_thresh 0.28 \
+  --visualize \
+  --output rocker_arm_final.json

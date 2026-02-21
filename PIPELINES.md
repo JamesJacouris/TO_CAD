@@ -111,17 +111,45 @@ python run_pipeline.py \
   --output my_design_opt_loop3.json
 ```
 
-**Rocker arm problem with full FEM output**:
+**Rocker arm problem (Yin et al.) — dedicated script**:
 ```bash
+# Default Yin setup: 75×60×12, volfrac=0.085, penal=3, rmin=3, 100 iters
+python run_top3d_rocker_arm.py \
+  --output output/hybrid_v2/rocker_arm_top3d.npz
+
+# Then run pipeline on the result
 python run_pipeline.py \
-  --nelx 40 --nely 20 --nelz 4 \
-  --volfrac 0.25 \
-  --problem rocker_arm \
-  --iters 100 \
-  --opt_loops 5 \
-  --limit 5.0 --snap 5.0 \
-  --output rocker_arm_final.json \
-  --visualize
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/rocker_arm_top3d.npz \
+  --nelx 75 --nely 60 --nelz 12 \
+  --vol_thresh 0.23 \
+  --output rocker_arm_final.json
+```
+
+**Rocker arm with custom void / joint positions**:
+```bash
+python run_top3d_rocker_arm.py \
+  --nelx 75 --nely 60 --nelz 12 \
+  --volfrac 0.085 --penal 3 --rmin 3 --max_loop 100 \
+  --void_x0 0.27 --void_x1 0.67 \
+  --void_y0 0.08 --void_y1 0.47 \
+  --output output/hybrid_v2/rocker_arm_custom.npz
+```
+
+**Rocker arm arguments**:
+```
+--nelx/nely/nelz     Domain grid (default: 75, 60, 12)
+--volfrac            Volume fraction (default: 0.085)
+--penal              SIMP penalty (default: 3.0)
+--rmin               Filter radius in elements (default: 3.0)
+--max_loop           Max TO iterations (default: 100)
+--rear_y_lo/hi       Rear clamped joint Y range, fraction of nely (default: 0.0, 1.0)
+--front_y_lo/hi      Front Y-restricted joint Y range (default: 0.0, 1.0)
+--load200_x/y        200N load position (fractions of nelx/nely, default: 0.5, 1.0)
+--load100_x/y        100N load position (fractions, default: 1.0, 0.5)
+--void_x0/x1/y0/y1  Passive void rectangle (fractions, default: motor opening region)
+--no_void            Disable passive void
+--output             Output .npz file
 ```
 
 ---

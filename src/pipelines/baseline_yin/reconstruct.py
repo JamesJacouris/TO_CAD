@@ -424,7 +424,7 @@ def main():
         nodes_dict, edges_list_raw = compute_uniform_radii(nodes_dict, edges_list_raw, voxel_vol, args.pitch)
 
     from src.pipelines.baseline_yin.postprocessing import ensure_nodes_at_bounding_extrema
-    nodes_dict, edges_list_raw = ensure_nodes_at_bounding_extrema(nodes_dict, edges_list_raw)
+    nodes_dict, edges_list_raw = ensure_nodes_at_bounding_extrema(nodes_dict, edges_list_raw, node_tags=node_tags)
     capture_snapshot("5_Extrema_Fixed", nodes_dict, edges_list_raw, plates=plates_data)
     
     if args.visualize:

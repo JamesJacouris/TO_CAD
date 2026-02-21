@@ -1,4 +1,52 @@
 import numpy as np
+from scipy.spatial.distance import pdist, squareform
+
+def remove_isolated_nodes(nodes_dict, edges, node_tags=None):
+    """
+    Removes nodes that are statistical outliers (isolated far from main cluster).
+    Uses interquartile range (IQR) to identify and remove outlier nodes.
+    Preserves tagged nodes (BC points).
+    """
+    if node_tags is None:
+        node_tags = {}
+
+    if len(nodes_dict) < 4:
+        return nodes_dict, edges  # Not enough points to detect outliers
+
+    node_ids = list(nodes_dict.keys())
+    coords = np.array([nodes_dict[nid] for nid in node_ids])
+
+    # For each axis, detect outliers using IQR method
+    outlier_nodes = set()
+
+    for axis in range(3):
+        vals = coords[:, axis]
+        q1 = np.percentile(vals, 25)
+        q3 = np.percentile(vals, 75)
+        iqr = q3 - q1
+
+        if iqr > 0:
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
+
+            for i, nid in enumerate(node_ids):
+                # Don't remove tagged nodes (BC points)
+                if nid in node_tags:
+                    continue
+
+                if vals[i] < lower_bound or vals[i] > upper_bound:
+                    outlier_nodes.add(nid)
+
+    if not outlier_nodes:
+        return nodes_dict, edges
+
+    # Remove outlier nodes and their edges
+    new_nodes_dict = {nid: coord for nid, coord in nodes_dict.items() if nid not in outlier_nodes}
+    new_edges = [e for e in edges if e[0] not in outlier_nodes and e[1] not in outlier_nodes]
+
+    print(f"  [Post] Removed {len(outlier_nodes)} isolated nodes: {outlier_nodes}")
+
+    return new_nodes_dict, new_edges
 
 # ----------------------------------------------------------------------------
 # Helper: Graph Representation
@@ -436,7 +484,7 @@ def compute_uniform_radii(nodes, edges, total_voxel_volume, pitch):
         
     return nodes, updated_edges
 
-def ensure_nodes_at_bounding_extrema(nodes_dict, edges):
+def ensure_nodes_at_bounding_extrema(nodes_dict, edges, node_tags=None):
     """
     Checks if global min/max coordinates (X/Y/Z) are covered by Nodes.
     If an extremity lies on an edge (intermediate point), splits the edge there.
@@ -444,7 +492,10 @@ def ensure_nodes_at_bounding_extrema(nodes_dict, edges):
 
     nodes_dict: {id: [x, y, z]}
     edges: list of [u, v, w, pts, rad...]
+    node_tags: dict {node_id: tag} for BC nodes (fixed/loaded) to preserve
     """
+    if node_tags is None:
+        node_tags = {}
     def point_to_line_distance(point, line_start, line_end):
         """Compute perpendicular distance from point to line segment."""
         v = line_end - line_start
@@ -458,6 +509,9 @@ def ensure_nodes_at_bounding_extrema(nodes_dict, edges):
         b = c1 / c2
         proj = line_start + b * v
         return np.linalg.norm(point - proj)
+
+    print("  [Post] Removing isolated outlier nodes...")
+    nodes_dict, edges = remove_isolated_nodes(nodes_dict, edges, node_tags=node_tags)
 
     print("  [Post] Checking Extremities for Node Coverage...")
     

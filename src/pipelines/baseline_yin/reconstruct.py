@@ -51,7 +51,7 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         return json.JSONEncoder.default(self, obj)
 
-def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_volume=None, design_bounds=None, node_tags=None, plates=None, plate_mode="bspline", curved=False):
+def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_volume=None, design_bounds=None, node_tags=None, plates=None, plate_mode="bspline", curved=False, load_force=None):
     """
     Exports clean graph to JSON for FreeCAD Macro.
     """
@@ -177,7 +177,7 @@ def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_v
                     })
 
     data = {
-        "metadata": {"method": "Baseline Yin", "pitch": pitch, "units": "mm", "target_volume": target_volume, "design_bounds": design_bounds, "plate_mode": plate_mode},
+        "metadata": {"method": "Baseline Yin", "pitch": pitch, "units": "mm", "target_volume": target_volume, "design_bounds": design_bounds, "plate_mode": plate_mode, "load_force": load_force if load_force is not None else [0.0, -1.0, 0.0]},
         "graph": {"nodes": nodes_list_out, "edges": edges_list_out, "node_tags": node_tags_out},
         "curves": curves, "history": history, "plates": plates_out, "joints": joints
     }
@@ -208,6 +208,9 @@ def main():
     parser.add_argument("--min_avg_neighbors", type=float, default=3.0, help="Minimum average neighbor count to classify as plate (default: 3.0)")
     # Note: --planarity_thresh and --linearity_thresh removed — post-thinning
     # topological classification (Yin Def 3.14) needs no tunable thresholds
+    parser.add_argument("--load_fx", type=float, default=0.0, help="Load force X component")
+    parser.add_argument("--load_fy", type=float, default=-1.0, help="Load force Y component")
+    parser.add_argument("--load_fz", type=float, default=0.0, help="Load force Z component")
     parser.add_argument("--plate_mode", type=str, default="bspline", choices=["bspline", "voxel", "mesh"],
                         help="Plate reconstruction mode")
     parser.add_argument("--curved", action="store_true",
@@ -447,7 +450,8 @@ def main():
         radii_viz = [e[4] if len(e)>=5 else args.pitch for e in edges_list_raw]
         show_step("5. Final Clean Graph (Color=Radius, Extrema Fixed)", viz_graph_radii(n_arr, e_arr, np.array(radii_viz)))
         
-    export_to_json(nodes_dict, edges_list_raw, args.output_json, args.pitch, history=history_snapshots, target_volume=voxel_vol, design_bounds=mesh_bounds.tolist(), node_tags=node_tags, plates=plates_data, plate_mode=args.plate_mode, curved=args.curved)
+    load_force = [args.load_fx, args.load_fy, args.load_fz]
+    export_to_json(nodes_dict, edges_list_raw, args.output_json, args.pitch, history=history_snapshots, target_volume=voxel_vol, design_bounds=mesh_bounds.tolist(), node_tags=node_tags, plates=plates_data, plate_mode=args.plate_mode, curved=args.curved, load_force=load_force)
     print("Done.")
 
 if __name__ == "__main__":

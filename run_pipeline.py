@@ -299,6 +299,9 @@ def main():
         "--rdp_epsilon", str(args.rdp),
         "--radius_mode", args.radius_mode,
         "--vol_thresh", str(args.vol_thresh),
+        "--load_fx", str(args.load_fx),
+        "--load_fy", str(args.load_fy),
+        "--load_fz", str(args.load_fz),
     ]
     # Hybrid-specific args
     if args.hybrid:
@@ -377,7 +380,7 @@ def main():
     joints_data = baseline_data.get('joints', [])
 
     # Compute baseline compliance
-    problem_config = TaggedProblem()
+    problem_config = TaggedProblem(load_vector=[args.load_fx, args.load_fy, args.load_fz])
     problem_config.load_tags_from_json(stage1_out)
     c_baseline = _compute_compliance(baseline_data, problem_config, E=1000.0)
 
@@ -409,7 +412,7 @@ def main():
             edges_size = np.array([[e[0], e[1]] for e in edges_raw], dtype=int)
             radii_size = np.array([e[4] if len(e) >= 5 else e[2] for e in edges_raw])
 
-            size_problem = TaggedProblem()
+            size_problem = TaggedProblem(load_vector=[args.load_fx, args.load_fy, args.load_fz])
             size_problem.load_tags_from_json(current_json)
 
             radii_sized, c_size_init, c_size_final = optimize_size(
@@ -468,7 +471,7 @@ def main():
             radii_layout = np.array([e[2] for e in edges_raw])
             node_tags = {int(k): v for k, v in layout_input['graph'].get('node_tags', {}).items()}
 
-            layout_problem = TaggedProblem()
+            layout_problem = TaggedProblem(load_vector=[args.load_fx, args.load_fy, args.load_fz])
             layout_problem.load_tags_from_json(sized_json)
 
             nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final = optimize_layout(

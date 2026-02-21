@@ -73,11 +73,11 @@ class TaggedProblem:
                 
                 total_force = [0.0, 0.0, 0.0]
                 if long_axis == 0:
-                    total_force[1] = -self.load_magnitude  # Load -Y
+                    total_force[1] = -self.load_magnitude  # X longest → load -Y (transverse)
                 elif long_axis == 1:
-                    total_force[0] = self.load_magnitude   # Load +X
+                    total_force[1] = -self.load_magnitude  # Y longest → load -Y (gravity down)
                 else:
-                    total_force[1] = -self.load_magnitude  # Load -Y
+                    total_force[1] = -self.load_magnitude  # Z longest → load -Y (transverse)
                     
                 print(f"[TaggedProblem] Auto-detected load direction: {total_force}")
             

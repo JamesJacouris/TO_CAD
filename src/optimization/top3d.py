@@ -74,7 +74,7 @@ def lk_H8(nu):
 
 class Top3D:
     def __init__(self, nelx, nely, nelz, volfrac, penal, rmin,
-                 use_projection=True, use_p_continuation=True):
+                 use_p_continuation=True):
         """Initialise a 3-D SIMP topology optimiser.
 
         Args:
@@ -82,9 +82,6 @@ class Top3D:
             volfrac (float): Target volume fraction in (0, 1].
             penal (float): SIMP penalty exponent (typically 3.0).
             rmin (float): Filter radius in element units.
-            use_projection (bool): Apply Heaviside β-continuation projection
-                after the density filter to sharpen 0/1 boundaries
-                (Wang, Lazarov & Sigmund, SMO 2011).  Defaults to True.
             use_p_continuation (bool): Ramp the penalty exponent from 1.0 to
                 ``penal`` over the first 60 iterations to avoid poor local
                 minima (Bendsøe & Sigmund, 2004).  Defaults to True.
@@ -95,7 +92,6 @@ class Top3D:
         self.volfrac = volfrac
         self.penal = penal
         self.rmin = rmin
-        self.use_projection = use_projection
         self.use_p_continuation = use_p_continuation
         
         self.nele = nelx * nely * nelz
@@ -162,8 +158,7 @@ class Top3D:
         """Run the topology optimisation loop (OC method).
 
         Iteratively updates element densities using an optimality criteria (OC)
-        update scheme with a density filter, optional p-continuation, and
-        optional Heaviside β-continuation projection.
+        update scheme with a density filter and optional p-continuation.
 
         Args:
             max_loop (int): Maximum number of OC iterations.  Defaults to 200.
@@ -179,14 +174,8 @@ class Top3D:
             **p-continuation** (when ``use_p_continuation=True``): the SIMP
             penalty is linearly ramped from 1.0 → ``penal`` over the first
             ``min(max_loop, 60)`` iterations.  Starting from p=1 keeps the
-            problem convex early on, then continuation steers toward a sharp
-            0/1 design (Bendsøe & Sigmund, 2004).
-
-            **Heaviside projection** (when ``use_projection=True``): after the
-            density filter, a smoothed Heaviside function with threshold η=0.5
-            and sharpness β is applied to push densities toward 0 or 1.  β
-            doubles every ``max_loop // 5`` iterations up to a cap of 32
-            (Wang, Lazarov & Sigmund, *SMO* 43, 2011).
+            problem nearly convex early on, avoiding poor local minima
+            (Bendsøe & Sigmund, 2004).
         """
         KE = lk_H8(0.3)
 
@@ -202,9 +191,6 @@ class Top3D:
 
         # Precompute p-continuation ramp endpoint
         p_ramp_end = min(max_loop, 60)
-        # β doubles every ~1/4 of total iterations, minimum 20 iters between doublings.
-        # Wang et al. (SMO 2011) recommend ~40 iters; cap at 8 to prevent CG ill-conditioning.
-        beta_update = max(max_loop // 4, 20)
 
         # Main Loop
         loop = 0
@@ -213,8 +199,6 @@ class Top3D:
         print(f"Starting Optimization (Mesh: {self.nelx}x{self.nely}x{self.nelz})")
         if self.use_p_continuation:
             print(f"  p-continuation: 1.0 → {self.penal} over {p_ramp_end} iterations")
-        if self.use_projection:
-            print(f"  Heaviside projection: β doubles every {beta_update} iterations (cap 32)")
 
         start_time = time.time()
 
@@ -227,41 +211,22 @@ class Top3D:
             else:
                 penal_now = self.penal
 
-            # ── 1. Filter raw design variables → physical densities ──────────
-            # self.x  = raw design variable (what OC updates, range [0,1])
-            # xfilt   = density-filtered x  (smoothed physical density)
-            # xPhys   = projected physical density used for FEM
-            x_raw_flat = self.x.flatten(order='F')
-            xfilt_flat = H @ x_raw_flat / Hs
+            # ── 1. Filter design variables → physical densities ──────────────
+            x_flat = self.x.flatten(order='F')
+            xPhys_flat = H @ x_flat / Hs
+            self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
 
             Emin = 1e-9
             E0 = 1.0
 
-            # ── 2. Heaviside β-continuation projection ───────────────────────
-            # Applied BEFORE FEM so stiffness uses the projected density.
-            # β doubles every beta_update iterations, capped at 8.
-            # Formula: (tanh(βη) + tanh(β(x−η))) / (tanh(βη) + tanh(β(1−η)))
-            # with η = 0.5 (threshold at midpoint).  Wang et al. (SMO 2011).
-            beta = 1.0
-            if self.use_projection:
-                beta = min(8.0, 2.0 ** ((loop - 1) // beta_update))
-                eta = 0.5
-                t_lo = np.tanh(beta * eta)
-                t_hi = np.tanh(beta * (1.0 - eta))
-                xPhys_flat = (t_lo + np.tanh(beta * (xfilt_flat - eta))) / (t_lo + t_hi)
-            else:
-                xPhys_flat = xfilt_flat
-
-            self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-
-            # ── 3. Setup Stiffness Matrix ────────────────────────────────────
+            # ── 2. Setup Stiffness Matrix ────────────────────────────────────
             filt_stiff = Emin + xPhys_flat**penal_now * (E0 - Emin)
 
             sK = (KE.flatten()[:, np.newaxis] @ filt_stiff[np.newaxis, :]).flatten(order='F')
             K = sp.coo_matrix((sK, (iK, jK)), shape=(self.ndof, self.ndof)).tocsc()
             K = (K + K.T) / 2.0
 
-            # ── 4. Solve System: K u = f (CG + Jacobi preconditioner) ───────
+            # ── 3. Solve System: K u = f (CG + Jacobi preconditioner) ───────
             free_dofs = np.setdiff1d(np.arange(self.ndof), self.fixed_dofs)
 
             K_ff = K[free_dofs, :][:, free_dofs]
@@ -278,7 +243,7 @@ class Top3D:
             u = np.zeros(self.ndof)
             u[free_dofs] = u_free
 
-            # ── 5. Sensitivity Analysis ──────────────────────────────────────
+            # ── 4. Sensitivity Analysis ──────────────────────────────────────
             u_ele = u[edofMat]
             ce = np.sum((u_ele @ KE) * u_ele, axis=1)
             c = np.sum(filt_stiff * ce)
@@ -286,28 +251,20 @@ class Top3D:
             dc = -penal_now * (E0 - Emin) * xPhys_flat**(penal_now - 1) * ce
             dv = np.ones(self.nele)
 
-            # ── 6. Chain rule through Heaviside projection ───────────────────
-            # dC/dxfilt = dC/dxPhys * dH/dxfilt
-            # dH/dxfilt = β * sech²(β(xfilt − η)) / (t_lo + t_hi)
-            if self.use_projection:
-                dH_flat = beta * (1.0 - np.tanh(beta * (xfilt_flat - eta))**2) / (t_lo + t_hi)
-                dc *= dH_flat
-
-            # ── 7. Filter Sensitivities (adjoint of density filter) ──────────
+            # ── 5. Filter Sensitivities (adjoint of density filter) ──────────
             dc[:] = H @ (dc / Hs)
             dv[:] = H @ (dv / Hs)
 
-            # ── 8. Optimality Criteria Update ────────────────────────────────
-            xnew_flat = self._optimality_criteria(x_raw_flat, dc, dv)
+            # ── 6. Optimality Criteria Update ────────────────────────────────
+            xnew_flat = self._optimality_criteria(x_flat, dc, dv)
             xnew = xnew_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
 
             change = np.max(np.abs(xnew - self.x))
             self.x = xnew
 
             p_str = f" p={penal_now:.2f}" if self.use_p_continuation else ""
-            b_str = f" β={beta:.0f}" if self.use_projection else ""
             print(f" It.: {loop:4d} Obj.: {c:10.4f} Vol.: {np.mean(self.xPhys):6.3f}"
-                  f" ch.: {change:6.3f}{p_str}{b_str}")
+                  f" ch.: {change:6.3f}{p_str}")
 
         print(f"Optimization converged in {time.time() - start_time:.2f}s")
         return self.xPhys

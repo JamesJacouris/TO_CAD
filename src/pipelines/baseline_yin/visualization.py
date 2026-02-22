@@ -1,3 +1,21 @@
+"""Open3D and Matplotlib visualisation utilities for the TO_CAD pipeline.
+
+All functions return Open3D geometry objects (``PointCloud``, ``LineSet``,
+``TriangleMesh``) that can be composed and passed to :func:`show_step`.
+
+Key functions
+-------------
+- :func:`viz_voxels` — binary mask → uniform-colour point cloud
+- :func:`viz_voxels_density` — binary mask → density-coloured point cloud
+- :func:`show_density_colorbar` — standalone Matplotlib colorbar legend
+- :func:`viz_graph` — beam graph → sphere nodes + cylinder edges
+- :func:`viz_zone_classification` — hybrid skeleton coloured by zone
+- :func:`show_step` — open an interactive Open3D window
+
+Note
+----
+Requires ``open3d`` (mocked during Sphinx builds).
+"""
 import open3d as o3d
 import numpy as np
 
@@ -327,10 +345,13 @@ def viz_zone_classification(zone_mask, pitch, origin):
     return geoms
 
 def save_zone_visualization(zone_mask, pitch, origin, output_path):
-    """
-    Save zone classification visualization as PNG image (top view and side views).
-    zone_mask: 3D int array with shape (Y, X, Z) matching Top3D convention.
-               Values: 1=plate, 2=beam, 0=background
+    """Save zone classification as a PNG image (top view and side views).
+
+    Args:
+        zone_mask: 3-D int array, shape ``(Y, X, Z)``; 1=plate, 2=beam, 0=background.
+        pitch: Voxel size in mm.
+        origin: World-space origin array ``[ox, oy, oz]``.
+        output_path: Destination file path for the PNG.
     """
     try:
         import matplotlib.pyplot as plt

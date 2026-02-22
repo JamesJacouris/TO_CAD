@@ -1,3 +1,15 @@
+"""3-D Euler-Bernoulli frame finite element analysis.
+
+Assembles a global sparse stiffness matrix from circular cross-section beam
+elements, applies boundary conditions, solves for displacements and
+compliance, and computes per-element compliance sensitivities for gradient-
+based optimisation.
+
+Main entry points
+-----------------
+- :func:`solve_frame` — static analysis → ``(displacements, compliance, forces)``
+- :func:`compute_frame_gradients` — ``dC/dr`` per edge
+"""
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg
@@ -73,13 +85,34 @@ def rotation_matrix(vec, roll=0.0):
     return T
 
 def solve_frame(nodes, edges, radii, E=1.0, nu=0.3, loads={}, bcs={}):
-    """
-    Solves 3D Frame static analysis.
-    nodes: (N, 3) 
-    edges: (M, 2)
-    radii: (M,) radius per edge
-    loads: {node_idx: [Fx, Fy, Fz, Mx, My, Mz]}
-    bcs: {node_idx: [0, 1, ... 5]} fixed DOFs
+    """Solve a 3-D Euler-Bernoulli frame under static loading.
+
+    Assembles the global stiffness matrix ``K`` from per-element local
+    stiffness matrices rotated into the global frame, applies Dirichlet BCs
+    by zeroing constrained rows/columns, and solves ``K_ff u_f = f_f`` with
+    ``scipy.sparse.linalg.spsolve``.
+
+    Args:
+        nodes (numpy.ndarray): Node positions, shape ``(N, 3)``, mm.
+        edges (numpy.ndarray): Element connectivity, shape ``(M, 2)``,
+            integer node indices.
+        radii (numpy.ndarray): Circular cross-section radii per element,
+            shape ``(M,)``, mm.
+        E (float): Young's modulus (consistent units with nodes/radii).
+        nu (float): Poisson's ratio (used for shear modulus
+            ``G = E / (2(1+nu))``).
+        loads (dict): ``{node_idx: [Fx, Fy, Fz, Mx, My, Mz]}``.
+        bcs (dict): ``{node_idx: [dof_0, dof_1, …]}``, list of fixed DOF
+            indices (0–5 per node).
+
+    Returns:
+        tuple:
+            - **u** (``numpy.ndarray``, shape ``(N*6,)``): Full displacement
+              vector (translations + rotations per node).
+            - **compliance** (``float``): Structural compliance
+              ``c = f^T u`` (lower = stiffer).
+            - **f** (``numpy.ndarray``, shape ``(N*6,)``): Applied force
+              vector.
     """
     n_nodes = len(nodes)
     n_dof = n_nodes * 6

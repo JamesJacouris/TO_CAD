@@ -12,14 +12,11 @@ class GenericProblem:
         self.bc_file = bc_file
         
     def apply(self, nodes):
-        """
-        Reads BCs from JSON.
-        Format expected:
-        {
-          "fixed_nodes": [id1, id2, ...],
-          "load_nodes": [id3, id4, ...],
-          "load_vector": [docx, docy, docz]
-        }
+        """Read BCs from ``pipeline_bcs.json`` and return loads and bcs dicts.
+
+        The JSON file must contain ``fixed_nodes`` (list of node indices),
+        ``load_nodes`` (list of node indices), and ``load_vector`` ``[fx, fy, fz]``.
+        The total load is distributed equally among all load nodes.
         """
         # Search for BC file in CWD or up one level
         path = self.bc_file

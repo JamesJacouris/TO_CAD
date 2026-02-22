@@ -1,8 +1,31 @@
+"""Yin 3-D parallel medial-axis thinning.
+
+This module implements Algorithm 3.1 from Yin (2002): a parallel, direction-
+sweeping thinning algorithm that reduces a 3-D binary volume to its topological
+skeleton while preserving connectivity (simple-point criterion) and, optionally,
+curve endpoints or surface voxels.
+
+Main entry point
+----------------
+:func:`thin_grid_yin`
+
+Thinning modes
+--------------
+- ``mode=0`` — curve-preserving (default for beam-only pipeline)
+- ``mode=1`` — surface-preserving
+- ``mode=2`` — hybrid EDT-gated (legacy)
+- ``mode=3`` — surface + curve-preserving (used by hybrid pipeline)
+
+Notes
+-----
+Critical inner loops are compiled with Numba ``@njit(parallel=True)``.
+JIT compilation occurs on the first call and may add ~5 s startup time.
+"""
 import numpy as np
 from numba import njit, prange
 from src.pipelines.baseline_yin.topology import (
-    is_simple_point, 
-    is_end_voxel, 
+    is_simple_point,
+    is_end_voxel,
     is_surface_point,
     is_surface_point_relaxed,
     get_neighbor_offsets,
@@ -122,14 +145,43 @@ def sequential_delete(volume, candidates, iteration_map, current_iter, mode=0, s
             deleted_count += 1
     return deleted_count
 
-def thin_grid_yin(volume, tags=None, max_iters=100, record_iterations=False, mode=0, surface_mask=None, edt=None, plate_threshold=3.0, boundary_mask=None):
-    """Main loop for Algorithm 3.1.
+def thin_grid_yin(volume, tags=None, max_iters=100, record_iterations=False,
+                  mode=0, surface_mask=None, edt=None, plate_threshold=3.0,
+                  boundary_mask=None):
+    """Iteratively thin a binary 3-D volume to its medial axis (Yin Algorithm 3.1).
 
-    Parameters
-    ----------
-    boundary_mask : ndarray or None
-        If provided, voxels where boundary_mask > 0 are protected from deletion.
-        Used to preserve beam-plate interface voxels during separate thinning passes.
+    Each iteration sweeps all six axis-aligned directions.  In each direction,
+    voxels that satisfy the deletion criteria (simple point, not a preserved
+    endpoint or surface voxel, not BC-tagged) are removed in parallel.
+    Iteration stops when no further voxels can be removed or ``max_iters``
+    is reached.
+
+    Args:
+        volume (numpy.ndarray): Binary 3-D volume, shape ``(D, H, W)``,
+            dtype ``uint8`` or ``bool``.  Modified in-place.
+        tags (numpy.ndarray or None): Integer tag array, same shape as
+            ``volume``.  Tagged voxels (``tags > 0``) are never deleted.
+        max_iters (int): Maximum number of thinning iterations.
+        record_iterations (bool): If ``True``, also return an integer array
+            recording the iteration at which each voxel was removed.
+        mode (int): Thinning mode (0=curve, 1=surface, 2=hybrid-EDT, 3=hybrid).
+        surface_mask (numpy.ndarray or None): Pre-computed surface mask
+            (unused in modes 0 and 3).
+        edt (numpy.ndarray or None): Euclidean distance transform of
+            ``volume``, required for ``mode=2``.
+        plate_threshold (float): EDT threshold separating plate from beam
+            regions in ``mode=2``.
+        boundary_mask (numpy.ndarray or None): Voxels where
+            ``boundary_mask > 0`` are protected from deletion.  Used to
+            preserve beam-plate interface voxels during hybrid thinning.
+
+    Returns:
+        numpy.ndarray: Thinned skeleton (same array as ``volume``, modified
+        in-place, shape ``(D, H, W)``).
+
+        If ``record_iterations=True``, returns a tuple
+        ``(skeleton, iteration_map)`` where ``iteration_map`` is an
+        ``int32`` array recording removal iteration per voxel.
     """
     directions = [0, 1, 2, 3, 4, 5]
     iteration_map = np.zeros_like(volume, dtype=np.int32) if record_iterations else None

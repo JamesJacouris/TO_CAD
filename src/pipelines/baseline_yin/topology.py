@@ -1,3 +1,15 @@
+"""Low-level topological predicates for 3-D binary thinning (Numba-accelerated).
+
+All functions operate on a ``3×3×3`` neighbourhood window extracted around a
+candidate voxel.  They are compiled by Numba ``@njit`` and cannot be called
+from non-Numba contexts with keyword arguments.
+
+Key predicates
+--------------
+- :func:`is_simple_point` — topology-preserving deletion test (Yin Def 3.14)
+- :func:`is_end_voxel` — curve endpoint test (≤ 1 26-neighbour)
+- :func:`is_surface_point` — plate surface voxel test
+"""
 import numpy as np
 from numba import njit
 

@@ -1,3 +1,13 @@
+"""L-BFGS-B node-position layout optimisation for beam frames.
+
+Moves free node positions along compliance gradients subject to box constraints
+(design domain) and a move limit.  Fixed (BC tag 1) and loaded (BC tag 2)
+nodes are frozen throughout.
+
+Main entry point
+----------------
+:func:`optimize_layout`
+"""
 import numpy as np
 import argparse
 import json
@@ -143,13 +153,48 @@ class LayoutOptimizer:
                                       loads=self.loads_init, bcs=self.bcs_init)
         return compliance
 
-def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0, visualize=False, 
-                    target_volume_abs=None, snap_dist=2.0, design_bounds=None, node_tags=None):
-    """
-    Optimizes Node Positions (x,y,z).
-    
+def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
+                    visualize=False, target_volume_abs=None, snap_dist=2.0,
+                    design_bounds=None, node_tags=None):
+    """Optimise node positions to minimise frame compliance (L-BFGS-B).
+
+    Free node positions are updated by ``scipy.optimize.minimize`` with
+    the ``L-BFGS-B`` method.  Each function evaluation performs a full
+    FEA solve and assembles analytical compliance gradients.
+
+    BC nodes (``tag=1``) and loaded nodes (``tag=2``) are excluded from
+    the optimisation variables.  Box bounds are set to
+    ``initial_position ± move_limit`` clipped to ``design_bounds``.
+
+    After convergence, nodes within ``snap_dist`` of each other are merged
+    to maintain a clean graph topology.
+
     Args:
-        design_bounds: [[min_x, min_y, min_z], [max_x, max_y, max_z]] - design domain limits
+        nodes (numpy.ndarray): Initial node positions, shape ``(N, 3)``, mm.
+        edges (numpy.ndarray): Element connectivity, shape ``(M, 2)``.
+        radii (numpy.ndarray): Per-element radii, shape ``(M,)``, mm.
+        problem: Problem config with ``apply(nodes) → (loads, bcs)``.
+        E (float): Young's modulus.
+        move_limit (float): Maximum allowed node displacement per step, mm.
+        visualize (bool): Show Open3D radius visualisation after optimisation.
+        target_volume_abs (float or None): Volume constraint for reporting.
+        snap_dist (float): Distance threshold for post-opt node merging, mm.
+        design_bounds (list or None): ``[[x_min, y_min, z_min],
+            [x_max, y_max, z_max]]`` — hard box constraints on node positions.
+        node_tags (dict or None): ``{node_idx: tag}`` — tag 1=fixed,
+            tag 2=loaded; tagged nodes are excluded from optimisation.
+
+    Returns:
+        tuple:
+            - **nodes_opt** (``numpy.ndarray``, shape ``(N', 3)``): Optimised
+              node positions (N' ≤ N after snapping).
+            - **edges_opt** (``numpy.ndarray``, shape ``(M', 2)``): Updated
+              edge connectivity after snapping.
+            - **radii_opt** (``numpy.ndarray``, shape ``(M',)``): Radii
+              corresponding to ``edges_opt``.
+            - **tags_opt** (``dict``): Updated node tags after snapping.
+            - **c_initial** (``float``): Compliance before optimisation.
+            - **c_final** (``float``): Compliance after optimisation.
     """
     optimizer = LayoutOptimizer(nodes, edges, radii, problem, E)
     x0 = nodes.flatten()

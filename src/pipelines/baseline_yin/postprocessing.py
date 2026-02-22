@@ -1,3 +1,17 @@
+"""Graph refinement: pruning, edge collapse, polyline simplification, radius computation.
+
+Applied after skeleton-to-graph extraction to produce a clean, well-connected
+beam graph suitable for FEA and CAD export.
+
+Key functions
+-------------
+- :func:`clean_edge_polylines` — remove spurious intermediate waypoints
+- :func:`prune_branches` — delete short dead-end branch tips
+- :func:`collapse_short_edges` — merge nodes connected by very short edges
+- :func:`compute_edge_radii` — per-edge radius from EDT
+- :func:`compute_uniform_radii` — volume-matching uniform radius
+- :func:`ensure_nodes_at_bounding_extrema` — guarantee nodes at domain corners
+"""
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 
@@ -491,12 +505,10 @@ def compute_edge_radii(nodes, edges, edt_volume, pitch, origin):
     return nodes, updated_edges
 
 def compute_uniform_radii(nodes, edges, total_voxel_volume, pitch):
-    """
-    Implements Yin's 'Volume Matching' initialization.
-    Assumes total frame volume = total voxel volume.
-    Calculates uniform radius r0 such that:
-       Volume_Frame = A0 * Total_Length = Volume_Voxels
-       r0 = sqrt( (Volume_Voxels / Total_Length) / pi )
+    """Compute a uniform radius matching the total voxel volume (Yin volume-matching).
+
+    Solves ``r0 = sqrt(Volume_Voxels / (π × Total_Length))`` so that the
+    total frame volume equals the input solid voxel volume.
     """
     # 1. Calculate Total Length
     total_length = 0.0

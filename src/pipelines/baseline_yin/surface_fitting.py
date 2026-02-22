@@ -4,26 +4,24 @@ from scipy.interpolate import bisplrep, bisplev
 from scipy.spatial.transform import Rotation
 
 def fit_bspline_surface(points, degree=3, target_control_points=10):
-    """
-    Fits a B-Spline surface to a cloud of 3D points.
-    
-    Strategy (Yin's Medial Surface Fitting):
+    """Fit a B-spline surface to a cloud of 3-D points (Yin medial surface).
+
+    Strategy:
+
     1. PCA to align points to the XY plane (z' is the thin direction).
     2. Project points to (x', y').
-    3. Fit a smooth B-Spline z' = f(x', y').
+    3. Fit a smooth B-spline ``z' = f(x', y')`` via ``scipy.interpolate.bisplrep``.
     4. Evaluate on a grid and transform back to global coordinates.
-    
+
     Args:
-        points (np.ndarray): (N, 3) array of voxel coordinates.
-        degree (int): B-Spline degree (usually 3).
-        target_control_points (int): Approximate number of control points in each dim.
-        
+        points (numpy.ndarray): Shape ``(N, 3)`` array of voxel coordinates.
+        degree (int): B-spline degree (3 = cubic).
+        target_control_points (int): Target control-point count in each dimension.
+
     Returns:
-        dict: {
-            'ctrl_grid': [[x,y,z]...],  # Grid of 3D points for FreeCAD
-            'degree_u': int,
-            'degree_v': int
-        } or None if fitting fails.
+        dict or None: On success, ``{'ctrl_grid': [[x,y,z], …], 'degree_u': int,
+        'degree_v': int}``. Returns ``None`` if fitting fails or there are fewer
+        than 16 input points.
     """
     if len(points) < 16: # Need enough points for cubic fit
         return None

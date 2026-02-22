@@ -1,3 +1,14 @@
+"""Skeleton-to-graph extraction and post-thinning zone classification.
+
+This module converts a medial-axis skeleton (output of :mod:`thinning`) into
+a graph of beam nodes and edges, and classifies skeleton voxels into beam
+vs. plate zones for the hybrid pipeline.
+
+Main entry points
+-----------------
+- :func:`extract_graph` — skeleton → ``(nodes, edges, v_types, node_tags)``
+- :func:`classify_skeleton_post_thinning` — zone classification for hybrid mode
+"""
 import numpy as np
 from numba import njit, prange
 from scipy.ndimage import label, center_of_mass, binary_dilation
@@ -445,6 +456,36 @@ def smooth_polyline(points, iterations=3):
     return pts.tolist()
 
 def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
+    """Convert a thinned skeleton to a beam graph.
+
+    The function classifies skeleton voxels by local connectivity, collapses
+    tagged BC regions to single centroid nodes, then traces edges between
+    feature voxels (junctions, endpoints) via BFS through degree-2 voxels.
+
+    Args:
+        skeleton (numpy.ndarray): Binary skeleton array, shape ``(D, H, W)``,
+            ``uint8``.  Voxels with value ``> 0`` are skeleton.
+        pitch (float): Voxel size in mm.  Multiplied by voxel indices to
+            produce world-space node positions.
+        origin (numpy.ndarray): World-space origin ``[ox, oy, oz]`` (mm).
+        tags (numpy.ndarray or None): BC tag array, same shape as
+            ``skeleton``.  Tag ``1`` = fixed; tag ``2`` = loaded.
+        hybrid_mode (bool): If ``True``, use the hybrid voxel classifier
+            that distinguishes junction, end, surface, and body voxels.
+
+    Returns:
+        tuple:
+            - **nodes_arr** (``numpy.ndarray``, shape ``(N, 3)``): Node
+              positions in world space (mm).
+            - **edges_list** (``list``): Edge tuples
+              ``[u, v, weight, waypoints]`` where *u*, *v* are node indices,
+              *weight* is edge length (mm), and *waypoints* are intermediate
+              skeleton positions.
+            - **v_types** (``numpy.ndarray``, shape ``(D, H, W)``): Voxel
+              classification array (``int8``): 0=background, 1=endpoint,
+              2=body, 3=junction, 4=surface, 5=tagged.
+            - **node_tags** (``dict``): Maps node index → BC tag value.
+    """
     if tags is not None:
         skeleton, tags, fixed_centroids = consolidate_tagged_voxels(skeleton, tags)
     v_types = classify_voxels_hybrid(skeleton) if hybrid_mode else classify_voxels(skeleton)

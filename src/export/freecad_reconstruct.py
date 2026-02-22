@@ -790,15 +790,57 @@ def import_hybrid_json(json_path=None):
                                 box = Part.makeBox(box_size, box_size, box_size, corner)
                                 color_groups[color].append(box)
                             
-                            # Create one object per color
-                            for color, boxes in color_groups.items():
+                            # Create one object per color group
+                            for color_idx, (color, boxes) in enumerate(color_groups.items()):
                                 if boxes:
                                     comp = Part.makeCompound(boxes)
-                                    color_name = "Red" if color == (1.0, 0.0, 0.0) else "Cyan" if color == (0.0, 1.0, 1.0) else "Other"
-                                    obj = doc.addObject("Part::Feature", f"{safe_params}_{color_name}")
+                                    # Use semantic names for known zone colours; density index for gradient colours
+                                    if color == (1.0, 0.0, 0.0):
+                                        color_label = "Beam_Red"
+                                    elif color == (0.0, 1.0, 1.0):
+                                        color_label = "Plate_Cyan"
+                                    else:
+                                        color_label = f"Density_{color_idx:02d}"
+                                    obj = doc.addObject("Part::Feature", f"{safe_params}_{color_label}")
                                     obj.Shape = comp
                                     hist_root.addObject(obj)
-                                    obj.ViewObject.ShapeColor = color
+                                    obj.ViewObject.ShapeColor = (float(color[0]), float(color[1]), float(color[2]))
+
+                            # Density colorbar legend — only for the initial voxel snapshot
+                            if "Initial" in step_name:
+                                try:
+                                    n_bins = 10
+                                    vol_thresh_meta = data.get("metadata", {}).get("vol_thresh", 0.3)
+                                    legend_pitch = pitch * 2.0
+                                    legend_gap = legend_pitch * 0.3
+                                    legend_y = -legend_pitch * 4.0
+                                    legend_grp = doc.addObject(
+                                        "App::DocumentObjectGroup",
+                                        f"{safe_params}_DensityLegend"
+                                    )
+                                    hist_root.addObject(legend_grp)
+                                    for bin_i in range(n_bins):
+                                        t = bin_i / n_bins
+                                        if t <= 0.5:
+                                            s = t * 2.0
+                                            r_c, g_c, b_c = 1.0, s, 0.0
+                                        else:
+                                            s = (t - 0.5) * 2.0
+                                            r_c, g_c, b_c = 1.0 - s, 1.0, 0.0
+                                        x_start = bin_i * (legend_pitch + legend_gap)
+                                        corner = Vector(x_start, legend_y, 0.0)
+                                        cube = Part.makeBox(legend_pitch, legend_pitch, legend_pitch, corner)
+                                        lo_d = vol_thresh_meta + t * (1.0 - vol_thresh_meta)
+                                        hi_d = vol_thresh_meta + (t + 1.0 / n_bins) * (1.0 - vol_thresh_meta)
+                                        leg_obj = doc.addObject(
+                                            "Part::Feature",
+                                            f"{safe_params}_Leg_rho{lo_d:.2f}-{hi_d:.2f}"
+                                        )
+                                        leg_obj.Shape = cube
+                                        leg_obj.ViewObject.ShapeColor = (r_c, g_c, b_c)
+                                        legend_grp.addObject(leg_obj)
+                                except Exception as leg_e:
+                                    FreeCAD.Console.PrintWarning(f"  Density legend failed: {leg_e}\n")
                         else:
                             # Original behavior: single compound with default color
                             voxel_boxes = []

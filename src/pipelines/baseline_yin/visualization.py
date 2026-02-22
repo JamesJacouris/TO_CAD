@@ -17,6 +17,63 @@ def viz_voxels(mask, pitch, origin, color=[1, 0, 0], radius_scale=1.0):
     pcd.paint_uniform_color(color)
     return pcd
 
+def viz_voxels_density(solid, rho, pitch, origin, vol_thresh=0.3):
+    """
+    Visualize solid voxels coloured by density using RdYlGn colormap.
+    solid : bool mask (nely, nelx, nelz)
+    rho   : float64 density array, same shape as solid (range 0.0–1.0)
+    Normalises density over [vol_thresh, 1.0]: red=just above threshold, green=fully dense.
+    """
+    indices = np.argwhere(solid)           # (N,3): rows are (y,x,z)
+    if len(indices) == 0:
+        return None
+    pts_xyz = indices[:, [1, 0, 2]]
+    pts = origin + pts_xyz * pitch + pitch * 0.5
+    density_vals = rho[indices[:, 0], indices[:, 1], indices[:, 2]]
+    lo, hi = float(vol_thresh), 1.0
+    t = np.clip((density_vals - lo) / (hi - lo), 0.0, 1.0)
+    try:
+        import matplotlib.pyplot as plt
+        colors = plt.get_cmap("RdYlGn")(t)[:, :3]
+    except ImportError:
+        # Manual two-segment R→Y→G fallback (no matplotlib required)
+        colors = np.zeros((len(t), 3))
+        mask_lo = t <= 0.5
+        s = t[mask_lo] * 2.0
+        colors[mask_lo] = np.c_[np.ones_like(s), s, np.zeros_like(s)]
+        mask_hi = ~mask_lo
+        s = (t[mask_hi] - 0.5) * 2.0
+        colors[mask_hi] = np.c_[1.0 - s, np.ones_like(s), np.zeros_like(s)]
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pts)
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
+
+
+def show_density_colorbar(vol_thresh=0.3, title="Voxel Density"):
+    """
+    Displays a standalone matplotlib horizontal colorbar (non-blocking).
+    Call immediately before the Open3D window so both are visible together.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.colorbar as mcolorbar
+        import matplotlib.colors as mcolors
+        fig, ax = plt.subplots(figsize=(6, 1.2))
+        fig.subplots_adjust(bottom=0.5)
+        norm = mcolors.Normalize(vmin=vol_thresh, vmax=1.0)
+        cb = mcolorbar.ColorbarBase(
+            ax, cmap=plt.get_cmap("RdYlGn"), norm=norm, orientation='horizontal'
+        )
+        ticks = [t for t in [vol_thresh, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] if t >= vol_thresh]
+        cb.set_ticks(ticks)
+        cb.set_ticklabels([f"{v:.1f}" for v in ticks])
+        cb.set_label(title, fontsize=11)
+        plt.show(block=False)
+    except Exception as e:
+        print(f"[Viz] Colorbar skipped: {e}")
+
+
 def viz_graph(node_coords, edges, node_color=[0,1,0], edge_color=[0,0,1]):
     """
     Visualize a graph (Nodes + Edges).

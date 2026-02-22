@@ -33,7 +33,8 @@ from src.pipelines.baseline_yin.postprocessing import (
 )
 from scipy.ndimage import distance_transform_edt
 from src.pipelines.baseline_yin.visualization import (
-    viz_voxels, viz_graph, show_step,
+    viz_voxels, viz_voxels_density, show_density_colorbar,
+    viz_graph, show_step,
     viz_iterative_thinning, viz_skeleton_classification,
     viz_graph_comparison, viz_graph_radii,
     viz_zone_classification, save_zone_visualization
@@ -51,7 +52,7 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         return json.JSONEncoder.default(self, obj)
 
-def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_volume=None, design_bounds=None, node_tags=None, plates=None, plate_mode="bspline", curved=False, load_force=None):
+def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_volume=None, design_bounds=None, node_tags=None, plates=None, plate_mode="bspline", curved=False, load_force=None, vol_thresh=0.3):
     """
     Exports clean graph to JSON for FreeCAD Macro.
     """
@@ -177,7 +178,7 @@ def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_v
                     })
 
     data = {
-        "metadata": {"method": "Baseline Yin", "pitch": pitch, "units": "mm", "target_volume": target_volume, "design_bounds": design_bounds, "plate_mode": plate_mode, "load_force": load_force if load_force is not None else [0.0, -1.0, 0.0]},
+        "metadata": {"method": "Baseline Yin", "pitch": pitch, "units": "mm", "target_volume": target_volume, "design_bounds": design_bounds, "plate_mode": plate_mode, "load_force": load_force if load_force is not None else [0.0, -1.0, 0.0], "vol_thresh": vol_thresh},
         "graph": {"nodes": nodes_list_out, "edges": edges_list_out, "node_tags": node_tags_out},
         "curves": curves, "history": history, "plates": plates_out, "joints": joints
     }
@@ -252,7 +253,10 @@ def main():
         raw = np.argwhere(mask)
         reordered = raw[:, [1, 0, 2]]
         pts = origin + (reordered * args.pitch) + (args.pitch * 0.5)
-        if len(pts) > 50000: pts = pts[::2] 
+        if len(pts) > 50000:
+            pts = pts[::2]
+            if colors is not None:
+                colors = colors[::2]
         snapshot = {"type": "voxels", "step": name, "points": pts.tolist()}
         if colors is not None:
             snapshot["colors"] = colors.tolist() if isinstance(colors, np.ndarray) else colors
@@ -265,11 +269,34 @@ def main():
     # Calculate EDT early (needed for thinning protection)
     edt_v = distance_transform_edt(solid)
     
-    capture_voxel_snapshot("1_Initial_Voxels", solid)
-    
+    # Compute density-gradient colours (quantised to N_BINS for FreeCAD compatibility)
+    N_BINS = 10
+    _lo, _hi = float(args.vol_thresh), 1.0
+    _idx = np.argwhere(solid)
+    _density_vals = rho[_idx[:, 0], _idx[:, 1], _idx[:, 2]]
+    _t_raw = np.clip((_density_vals - _lo) / (_hi - _lo), 0.0, 1.0)
+    _t_bin = np.floor(_t_raw * N_BINS) / N_BINS   # at most N_BINS unique values
+    try:
+        import matplotlib.pyplot as _plt
+        _voxel_colors = _plt.get_cmap("RdYlGn")(_t_bin)[:, :3]
+    except ImportError:
+        # Manual two-segment R→Y→G fallback
+        _voxel_colors = np.zeros((len(_t_bin), 3))
+        _m_lo = _t_bin <= 0.5
+        _s = _t_bin[_m_lo] * 2.0
+        _voxel_colors[_m_lo] = np.c_[np.ones_like(_s), _s, np.zeros_like(_s)]
+        _m_hi = ~_m_lo
+        _s = (_t_bin[_m_hi] - 0.5) * 2.0
+        _voxel_colors[_m_hi] = np.c_[1.0 - _s, np.ones_like(_s), np.zeros_like(_s)]
+    capture_voxel_snapshot("1_Initial_Voxels", solid, colors=_voxel_colors)
+
     if args.visualize:
         try:
-            show_step("1. Initial Voxel Volume", [viz_voxels(solid, args.pitch, origin, [0.8, 0.8, 0.8])])
+            show_density_colorbar(vol_thresh=args.vol_thresh, title="Voxel Density")
+            show_step(
+                "1. Initial Voxel Volume (red=low density, green=high density)",
+                [viz_voxels_density(solid, rho, args.pitch, origin, vol_thresh=args.vol_thresh)]
+            )
         except Exception as e:
             print(f"  [Viz Warning] Initial voxel visualization failed: {e}")
         
@@ -463,7 +490,7 @@ def main():
     else:
         load_force = None
 
-    export_to_json(nodes_dict, edges_list_raw, args.output_json, args.pitch, history=history_snapshots, target_volume=voxel_vol, design_bounds=mesh_bounds.tolist(), node_tags=node_tags, plates=plates_data, plate_mode=args.plate_mode, curved=args.curved, load_force=load_force)
+    export_to_json(nodes_dict, edges_list_raw, args.output_json, args.pitch, history=history_snapshots, target_volume=voxel_vol, design_bounds=mesh_bounds.tolist(), node_tags=node_tags, plates=plates_data, plate_mode=args.plate_mode, curved=args.curved, load_force=load_force, vol_thresh=args.vol_thresh)
     print("Done.")
 
 if __name__ == "__main__":

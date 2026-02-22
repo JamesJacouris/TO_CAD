@@ -142,6 +142,23 @@ class Top3D:
                         self.bc_tags[ej, ei, ek] = tag_value
 
     def optimize(self, max_loop=200, tolx=0.01):
+        """Run the topology optimisation loop (OC method).
+
+        Iteratively updates element densities using an optimality criteria (OC)
+        update scheme with a density filter.  Convergence is declared when the
+        maximum density change between successive iterations falls below
+        ``tolx``.
+
+        Args:
+            max_loop (int): Maximum number of OC iterations.  Defaults to 200.
+            tolx (float): Convergence threshold on max density change.
+                Iteration stops when ``change <= tolx``.  Defaults to 0.01.
+
+        Returns:
+            numpy.ndarray: Physical density field ``xPhys`` with shape
+            ``(nely, nelx, nelz)``, values in ``[0, 1]``.  Voxels above the
+            volume fraction threshold represent retained material.
+        """
         KE = lk_H8(0.3)
         
         # Prepare Filter (Vectorized KD-Tree)

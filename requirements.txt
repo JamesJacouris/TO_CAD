@@ -1,0 +1,17 @@
+# Core pipeline dependencies
+numpy
+scipy
+numba
+matplotlib
+scikit-learn
+scikit-image
+networkx
+open3d
+
+# Parameter tuning (optional — only needed for tune_parameters.py)
+optuna
+
+# Documentation (only needed to build the Sphinx site)
+sphinx
+sphinx-rtd-theme
+graphviz

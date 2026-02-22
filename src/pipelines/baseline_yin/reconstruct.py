@@ -1,3 +1,28 @@
+"""Stage 1 — Skeleton Reconstruction.
+
+Converts a voxel density field (Top3D ``.npz`` output) into a beam/plate
+graph suitable for FEM optimisation.
+
+Entry points
+------------
+``reconstruct_npz(npz_path, output_json, **kwargs)``
+    Direct Python API — call from ``run_pipeline.py`` or tests without
+    spawning a subprocess.
+
+``export_to_json(nodes, edges, output_path, ...)``
+    Serialise a skeleton graph to the canonical ``[u, v, r]`` JSON format.
+
+CLI
+---
+.. code-block:: bash
+
+    python -m src.pipelines.baseline_yin.reconstruct \\
+        --input top3d_result.npz --output stage1.json --hybrid
+
+Pipeline position
+-----------------
+``run_pipeline.py`` → *Stage 1 — this module* → size_opt → layout_opt
+"""
 import sys
 import os
 import argparse

@@ -1,3 +1,6 @@
+__all__ = ["load_problem_config"]
+
+
 def load_problem_config(problem_name):
     """
     Dynamically loads a problem class by name.

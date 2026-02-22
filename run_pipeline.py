@@ -173,6 +173,11 @@ def main():
     g_top3d.add_argument("--penal", type=float, default=3.0, help="Penalization factor")
     g_top3d.add_argument("--rmin", type=float, default=1.5, help="Filter radius (R)")
     g_top3d.add_argument("--top3d_iters", "--max_loop", type=int, default=50, help="Max Top3D iterations")
+    g_top3d.add_argument("--no-heaviside", dest="use_projection", action="store_false",
+                         help="Disable Heaviside β-projection in Top3D (on by default)")
+    g_top3d.add_argument("--no-p-continuation", dest="use_p_continuation", action="store_false",
+                         help="Disable p-continuation ramp in Top3D (on by default)")
+    parser.set_defaults(use_projection=True, use_p_continuation=True)
 
     # === Load Definition ===
     g_load = parser.add_argument_group("Load Definition")
@@ -299,6 +304,8 @@ def main():
         if args.load_x is not None: cmd += ["--load_x", str(args.load_x)]
         if args.load_y is not None: cmd += ["--load_y", str(args.load_y)]
         if args.load_z is not None: cmd += ["--load_z", str(args.load_z)]
+        if not args.use_projection: cmd += ["--no-heaviside"]
+        if not args.use_p_continuation: cmd += ["--no-p-continuation"]
 
         if not run_stage(cmd, "STAGE 0: Python Top3D Topology Optimisation"):
             return 1

@@ -25,6 +25,12 @@ def main():
     # Problem Type
     parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "bridge", "deck"], help="Problem type")
     parser.add_argument("--load_dist", type=str, default="point", choices=["point", "surface_top", "surface_bottom"], help="Load distribution")
+    # Quality improvements
+    parser.add_argument("--no-heaviside", dest="use_projection", action="store_false",
+                        help="Disable Heaviside β-continuation projection (enabled by default)")
+    parser.add_argument("--no-p-continuation", dest="use_p_continuation", action="store_false",
+                        help="Disable p-continuation penalty ramp (enabled by default)")
+    parser.set_defaults(use_projection=True, use_p_continuation=True)
     
     args = parser.parse_args()
     
@@ -32,7 +38,9 @@ def main():
     print(f"Mesh: {args.nelx}x{args.nely}x{args.nelz}, VolFrac: {args.volfrac}")
     
     # Initialize Solver
-    solver = Top3D(args.nelx, args.nely, args.nelz, args.volfrac, args.penal, args.rmin)
+    solver = Top3D(args.nelx, args.nely, args.nelz, args.volfrac, args.penal, args.rmin,
+                   use_projection=args.use_projection,
+                   use_p_continuation=args.use_p_continuation)
     
     # --- Define Problem Boundary Conditions ---
     # Top3D node ordering (F-order): Y varies fastest, then X, then Z

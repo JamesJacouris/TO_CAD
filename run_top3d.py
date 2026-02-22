@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--load_fy", type=float, default=-1.0, help="Load Y Magnitude")
     parser.add_argument("--load_fz", type=float, default=0.0, help="Load Z Magnitude")
     # Output and Control
-    parser.add_argument("--max_loop", type=int, default=50, help="Max Iterations")
+    parser.add_argument("--top3d_iters", "--max_loop", type=int, default=50, help="Max Iterations")
     parser.add_argument("--output", default="python_top3d_result.npz", help="Output .npz file")
     # Problem Type
     parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "bridge", "deck"], help="Problem type")
@@ -134,7 +134,7 @@ def main():
         print(f"Force Vector: [{args.load_fx}, {args.load_fy}, {args.load_fz}]")
 
     # Change Iterations
-    xPhys = solver.optimize(max_loop=args.max_loop) 
+    xPhys = solver.optimize(max_loop=args.top3d_iters) 
     
     # Export
     # Save rho, bc_tags, pitch, origin as .npz (compressed dict)

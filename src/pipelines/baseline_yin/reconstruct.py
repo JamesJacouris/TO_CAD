@@ -211,7 +211,7 @@ def _run(args):
     # Derive output directory and base name
     output_dir = os.path.dirname(args.output_json) or "."
     output_basename = os.path.splitext(os.path.basename(args.output_json))[0]
-    args.output_dir = output_dir  # Add to args for later use
+    args.out_dir = output_dir  # Add to args for later use
 
     bc_tags = None
     if args.input_mesh.endswith(".npz"):
@@ -306,7 +306,7 @@ def _run(args):
         print(f"[2] Hybrid thinning (mode=3, {n_solid} solid voxels)...")
         if args.visualize:
             skeleton, iter_map = thin_grid_yin(
-                solid.copy(), tags=bc_tags, max_iters=args.max_iters,
+                solid.copy(), tags=bc_tags, max_iters=args.skel_iters,
                 record_iterations=True, mode=3, edt=edt_v
             )
             try:
@@ -315,7 +315,7 @@ def _run(args):
                 print(f"  [Viz Warning] Thinning visualization failed: {e}")
         else:
             skeleton = thin_grid_yin(
-                solid.copy(), tags=bc_tags, max_iters=args.max_iters,
+                solid.copy(), tags=bc_tags, max_iters=args.skel_iters,
                 mode=3, edt=edt_v
             )
 
@@ -326,9 +326,9 @@ def _run(args):
         zone_mask, plate_labels, zone_stats = classify_skeleton_post_thinning(
             skeleton,
             min_plate_size=args.min_plate_size,
-            flatness_ratio=args.flatness_ratio,
+            flatness_ratio=args.flatness,
             junction_thresh=args.junction_thresh,
-            min_avg_neighbors=args.min_avg_neighbors
+            min_avg_neighbors=args.min_neighbors
         )
 
         # Re-capture skeleton with zone classification colors for debugging
@@ -353,7 +353,7 @@ def _run(args):
 
         # Save zone classification visualization
         capture_voxel_snapshot("2.5_Zone_Classification", zone_mask > 0)
-        viz_path = os.path.join(args.output_dir, f"{output_basename}_2_5_zones.png")
+        viz_path = os.path.join(args.out_dir, f"{output_basename}_2_5_zones.png")
         if save_zone_visualization(zone_mask, args.pitch, origin, viz_path):
             print(f"  -> Zone visualization saved: {viz_path}")
 
@@ -405,17 +405,17 @@ def _run(args):
         # ---------------------------------------------------------------
         # PURE BEAM PATH: Standard curve-preserving thinning
         # ---------------------------------------------------------------
-        print(f"[2] Thinning (Max Iters={args.max_iters}, Mode=0)...")
+        print(f"[2] Thinning (Max Iters={args.skel_iters}, Mode=0)...")
         if args.visualize:
             skeleton, iter_map = thin_grid_yin(
-                solid.copy(), tags=bc_tags, max_iters=args.max_iters,
+                solid.copy(), tags=bc_tags, max_iters=args.skel_iters,
                 record_iterations=True, mode=0, edt=edt_v
             )
             show_step("2a. Iterative Removal", [viz_iterative_thinning(iter_map, args.pitch, origin)])
             # 2b skeleton classification viz skipped — transparent point cloud causes hang
         else:
             skeleton = thin_grid_yin(
-                solid.copy(), tags=bc_tags, max_iters=args.max_iters,
+                solid.copy(), tags=bc_tags, max_iters=args.skel_iters,
                 mode=0, edt=edt_v
             )
 
@@ -449,8 +449,8 @@ def _run(args):
         nodes_dict, edges_list_raw = prune_branches(nodes_dict, edges_list_raw, args.prune_len, node_tags=node_tags)
         capture_snapshot("4B_Pruned", nodes_dict, edges_list_raw, plates=plates_data)
         
-    if args.rdp_epsilon > 0:
-        nodes_dict, edges_list_raw = simplify_graph_geometry(nodes_dict, edges_list_raw, args.rdp_epsilon)
+    if args.rdp > 0:
+        nodes_dict, edges_list_raw = simplify_graph_geometry(nodes_dict, edges_list_raw, args.rdp)
         capture_snapshot("4C_Simplified_RDP", nodes_dict, edges_list_raw, plates=plates_data)
 
     if args.radius_mode == 'edt':
@@ -494,11 +494,11 @@ def reconstruct_npz(npz_path, output_json, **kwargs):
     """
     import types
     defaults = dict(
-        pitch=1.0, max_iters=50, collapse_thresh=2.0, prune_len=5.0,
-        rdp_epsilon=0.0, radius_mode='edt', vol_thresh=0.3,
-        hybrid=False, detect_plates='auto', plate_thickness_ratio=0.15,
-        min_plate_size=4, flatness_ratio=3.0, junction_thresh=4,
-        min_avg_neighbors=3.0, load_fx=None, load_fy=None, load_fz=None,
+        pitch=1.0, skel_iters=50, collapse_thresh=2.0, prune_len=5.0,
+        rdp=0.0, radius_mode='edt', vol_thresh=0.3,
+        hybrid=False, detect_plates='auto', plate_thickness=0.15,
+        min_plate_size=4, flatness=3.0, junction_thresh=4,
+        min_neighbors=3.0, load_fx=None, load_fy=None, load_fz=None,
         plate_mode='bspline', curved=False, visualize=False,
     )
     defaults.update(kwargs)
@@ -510,20 +510,20 @@ def main():
     parser.add_argument("input_mesh", help="Input NPZ or STL")
     parser.add_argument("output_json", help="Output JSON")
     parser.add_argument("--pitch", type=float, default=1.0)
-    parser.add_argument("--max_iters", type=int, default=50)
+    parser.add_argument("--skel_iters", "--max_iters", type=int, default=50)
     parser.add_argument("--collapse_thresh", type=float, default=2.0)
     parser.add_argument("--prune_len", type=float, default=5.0)
-    parser.add_argument("--rdp_epsilon", type=float, default=0.0)
+    parser.add_argument("--rdp", "--rdp_epsilon", type=float, default=0.0)
     parser.add_argument("--radius_mode", type=str, default="edt", choices=["edt", "uniform"])
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--vol_thresh", type=float, default=0.3)
     parser.add_argument("--hybrid", action="store_true")
     parser.add_argument("--detect_plates", type=str, default="auto", choices=["auto", "off", "force"])
-    parser.add_argument("--plate_thickness_ratio", type=float, default=0.15)
+    parser.add_argument("--plate_thickness", "--plate_thickness_ratio", type=float, default=0.15)
     parser.add_argument("--min_plate_size", type=int, default=4)
-    parser.add_argument("--flatness_ratio", type=float, default=3.0)
+    parser.add_argument("--flatness", "--flatness_ratio", type=float, default=3.0)
     parser.add_argument("--junction_thresh", type=int, default=4)
-    parser.add_argument("--min_avg_neighbors", type=float, default=3.0)
+    parser.add_argument("--min_neighbors", "--min_avg_neighbors", type=float, default=3.0)
     parser.add_argument("--load_fx", type=float, default=None)
     parser.add_argument("--load_fy", type=float, default=None)
     parser.add_argument("--load_fz", type=float, default=None)

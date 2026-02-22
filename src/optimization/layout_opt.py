@@ -9,7 +9,7 @@ from scipy.optimize import minimize
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from src.optimization.fem import solve_frame
-from src.optimization.size_opt import load_problem_config
+from src.problems import load_problem_config
 from src.pipelines.baseline_yin.visualization import viz_graph_radii, show_step, viz_loads
 # Removed collapse_short_edges import as we implementing local logic
 # from src.pipelines.baseline_yin.postprocessing import collapse_short_edges, recheck_graph, graph_to_arrays

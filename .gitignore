@@ -29,5 +29,9 @@ output/
 !README.md
 !HYBRID_TEST_CASES.md
 
+# Temporary development files
+temp_*.py
+tmp/
+
 # Logs
 *.log

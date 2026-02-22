@@ -10,11 +10,6 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")
 sys.path.append(REPO_ROOT)
 
 try:
-    from src.voxelization.voxelize import voxelize_mesh
-except ImportError:
-    voxelize_mesh = None  # Only needed for STL input, not NPZ
-
-try:
     from src.curves.spline import fit_cubic_bezier, sample_curve_points
     _CURVES_AVAILABLE = True
 except ImportError:
@@ -236,10 +231,6 @@ def main():
         origin = np.array([0.0, 0.0, 0.0])
         # dims = (nely, nelx, nelz); reorder to [nelx, nely, nelz] world coords
         mesh_bounds = np.array([[0.0, 0.0, 0.0], [dims[1]*args.pitch, dims[0]*args.pitch, dims[2]*args.pitch]])
-    else:
-        print(f"[1] Voxelizing {args.input_mesh} (Pitch={args.pitch})...")
-        solid, dims, origin, mesh_bounds = voxelize_mesh(args.input_mesh, args.pitch)
-    
     history_snapshots = []
     def capture_snapshot(name, nodes_d, edges_l, plates=None):
         sorted_ids = sorted(nodes_d.keys())

@@ -44,9 +44,9 @@ def main():
     kl_flat = kl.flatten(order='F')
 
     if args.problem == "roof":
-        # 1. Fixed BC: 4 Bottom Corners (z=0)
+        # 1. Fixed BC: 4 Bottom Corners (z=0) set inset by 1 to create a 2x2 element support pillar
         nx, ny = args.nelx, args.nely
-        corners = [(0, 0, 0), (nx, 0, 0), (0, ny, 0), (nx, ny, 0)]
+        corners = [(1, 1, 0), (nx-1, 1, 0), (1, ny-1, 0), (nx-1, ny-1, 0)]
         fixed_node_indices = []
         for (cx, cy, cz) in corners:
             dist = (il_flat - cx)**2 + (jl_flat - cy)**2 + (kl_flat - cz)**2
@@ -56,7 +56,7 @@ def main():
         for n in fixed_node_indices:
             fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
         solver.set_fixed_dofs(np.array(fixed_dofs_list))
-        print(f"Fixed {len(fixed_node_indices)} Corner Nodes at Z=0 (Support Pillars).")
+        print(f"Fixed {len(fixed_node_indices)} Corner Nodes at Z=0 (2x2 Support Pillars).")
         
         # Default Load for Roof: Distributed across top surface
         if args.load_x is None and args.load_dist == "point":

@@ -50,22 +50,45 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
     all_plate_verts = []
     plate_id_per_vert = []
     plate_local_idx = []
+    tag_per_vert = []
+    
+    tagged_plate_verts = []
+    tagged_plate_tags = []
 
     for p_idx, plate in enumerate(plates_data):
         # Prefer skeleton voxel centers (mid-surface) over hull vertices
-        verts = np.array(plate.get("voxels", plate.get("vertices", [])))
+        if "mid_surface" in plate:
+            verts = plate["mid_surface"].get("vertices", [])
+            tags = plate["mid_surface"].get("node_tags", {})
+        else:
+            verts = np.array(plate.get("voxels", plate.get("vertices", [])))
+            tags = {}
+            
         if len(verts) == 0:
             continue
         for v_idx in range(len(verts)):
-            all_plate_verts.append(verts[v_idx])
+            vert = verts[v_idx]
+            all_plate_verts.append(vert)
             plate_id_per_vert.append(p_idx)
             plate_local_idx.append(v_idx)
+            
+            # str keys in JSON, int keys otherwise
+            tag_val = tags.get(v_idx, tags.get(str(v_idx), 0))
+            tag_per_vert.append(tag_val)
+            
+            if tag_val > 0:
+                tagged_plate_verts.append(vert)
+                tagged_plate_tags.append(tag_val)
 
     if len(all_plate_verts) == 0:
         return nodes_dict, edges, node_tags, plates_data
 
     all_plate_verts = np.array(all_plate_verts)
     tree = cKDTree(all_plate_verts)
+    
+    tagged_tree = None
+    if len(tagged_plate_verts) > 0:
+        tagged_tree = cKDTree(np.array(tagged_plate_verts))
 
     # Compute node degrees for endpoint detection
     degree = {}
@@ -77,6 +100,14 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
     n_snapped = 0
     n_new_joints = 0
     snapped_nodes = set()
+    
+    def get_tag_for_coord(coord):
+        if tagged_tree is not None:
+            # Search for a tagged vertex within a generous radius to ensure loads aren't missed
+            dist, idx = tagged_tree.query(coord, distance_upper_bound=pitch * 5.0)
+            if dist != np.inf:
+                return tagged_plate_tags[idx]
+        return 0
 
     # Pass 1: Snap existing beam nodes within snap_distance
     for nid, coord in list(nodes_dict.items()):
@@ -86,10 +117,11 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
             nodes_dict[nid] = np.array(plate_vertex)
             p_idx = plate_id_per_vert[idx]
 
-            # Tag as fixed support (don't override load tags)
-            # Junction nodes should only be fixed if they inherit a tag from original voxels
-            # The original logic here was forcing fixed=1, which we now avoid.
-            pass
+            # Inherit tag from nearby tagged plate vertices
+            if nid not in node_tags or node_tags[nid] == 0:
+                plate_tag = get_tag_for_coord(plate_vertex)
+                if plate_tag > 0:
+                    node_tags[nid] = plate_tag
 
             # Record connection
             if "connection_node_ids" not in plates_data[p_idx]:
@@ -118,7 +150,11 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
             # Create a new junction node at the plate vertex
             new_id = max(nodes_dict.keys()) + 1
             nodes_dict[new_id] = np.array(plate_vertex)
-            # node_tags[new_id] = 1  # Fixed support -- REMOVED artificial fixing
+            
+            # Inherit tag from nearby tagged plate vertices
+            plate_tag = get_tag_for_coord(plate_vertex)
+            if plate_tag > 0:
+                node_tags[new_id] = plate_tag
 
             # Add a short connecting edge
             edge_len = float(dist)

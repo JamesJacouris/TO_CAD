@@ -65,21 +65,19 @@ class TaggedProblem:
             if self.load_vector is not None:
                 total_force = self.load_vector
             else:
-                # Auto-detect: transverse load on long axis (like CantileverSetup)
+                # Auto-detect: load in the shortest dimension direction (gravity-like)
+                # Node coordinates are in (Y, X, Z) order from the voxel grid.
+                # Physical Z (vertical) is coordinate axis 2.
+                # Default to downward (-Z) which matches most Top3D load cases.
                 mins = np.min(nodes, axis=0)
                 maxs = np.max(nodes, axis=0)
                 dims = maxs - mins
-                long_axis = np.argmax(dims)
-                
+                short_axis = np.argmin(dims)
+
                 total_force = [0.0, 0.0, 0.0]
-                if long_axis == 0:
-                    total_force[1] = -self.load_magnitude  # X longest → load -Y (transverse)
-                elif long_axis == 1:
-                    total_force[1] = -self.load_magnitude  # Y longest → load -Y (gravity down)
-                else:
-                    total_force[1] = -self.load_magnitude  # Z longest → load -Y (transverse)
-                    
-                print(f"[TaggedProblem] Auto-detected load direction: {total_force}")
+                total_force[short_axis] = -self.load_magnitude  # Load in -short axis
+
+                print(f"[TaggedProblem] Auto-detected load direction: {total_force} (short_axis={short_axis})")
             
             # Distribute force among all loaded nodes
             n_loaded = len(loaded_ids)

@@ -238,6 +238,10 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0, visu
     c_init = optimizer.objective(x0)
     print(f"[Layout] Initial Compliance: {c_init:.4f}")
     
+    if np.isnan(c_init):
+        print("[ERROR] Beam Graph is singular or disconnected (NaN Compliance). Skipping Layout Optimization.")
+        return nodes, edges, radii, node_tags, c_init, c_init
+        
     # Optimization
     res = minimize(optimizer.objective, x0, method='L-BFGS-B', bounds=bounds, 
                    options={'disp': True, 'maxiter': 50, 'eps': 1e-4}, # epsilon step for FD

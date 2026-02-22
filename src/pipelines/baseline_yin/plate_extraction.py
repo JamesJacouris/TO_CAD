@@ -479,14 +479,23 @@ def _extract_mid_surface(skel_voxels, edt, pitch, origin, bc_tags=None):
     # Propagate BC Tags to mid-surface vertices
     node_tags_ms = {}
     if bc_tags is not None:
-        for i, v in enumerate(ms_vertices):
-            voxel_coord = np.round((v - origin - pitch * 0.5) / pitch).astype(int)
-            vz = np.clip(voxel_coord[0], 0, D - 1)
-            vy = np.clip(voxel_coord[1], 0, H - 1)
-            vx = np.clip(voxel_coord[2], 0, W - 1)
-            tag = int(bc_tags[vz, vy, vx])
-            if tag > 0:
-                node_tags_ms[i] = tag
+        tagged_coords = np.argwhere(bc_tags > 0)
+        if len(tagged_coords) > 0:
+            # Tag coordinates in world space
+            tag_world = origin + tagged_coords[:, [1, 0, 2]].astype(np.float64) * pitch + pitch * 0.5
+            tree = cKDTree(tag_world)
+            for i, v in enumerate(ms_vertices):
+                # Search within half-thickness + a generous tolerance (5.0x pitch) 
+                # This ensures we catch loads even if the skeleton drops a few voxels below the boundary.
+                rad = max(thickness_per_vertex[i] * 0.5 + pitch * 2.0, pitch * 6.0)
+                dist, idx = tree.query(v, k=1, distance_upper_bound=rad)
+                if dist != np.inf:
+                    voxel_coord = tagged_coords[idx]
+                    tag = int(bc_tags[voxel_coord[0], voxel_coord[1], voxel_coord[2]])
+                    if tag > 0:
+                        node_tags_ms[i] = tag
+
+    print(f"      [MidSurface] Extracted tags for {len(node_tags_ms)} vertices.")
 
     return {
         "vertices": ms_vertices.tolist(),

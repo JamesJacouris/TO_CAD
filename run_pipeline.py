@@ -178,9 +178,11 @@ def main():
     g_load.add_argument("--load_x", type=int, default=None, help="Load node X index (default=nelx)")
     g_load.add_argument("--load_y", type=int, default=None, help="Load node Y index (default=nely)")
     g_load.add_argument("--load_z", type=int, default=None, help="Load node Z index (default=nelz/2)")
-    g_load.add_argument("--load_fx", type=float, default=0.0, help="Load force X component")
-    g_load.add_argument("--load_fy", type=float, default=-1.0, help="Load force Y component")
-    g_load.add_argument("--load_fz", type=float, default=0.0, help="Load force Z component")
+    g_load.add_argument("--load_fx", type=float, default=None, help="Load force X component")
+    g_load.add_argument("--load_fy", type=float, default=None, help="Load force Y component")
+    g_load.add_argument("--load_fz", type=float, default=None, help="Load force Z component")
+    g_load.add_argument("--load_dist", type=str, default="point", choices=["point", "surface_top", "surface_bottom"],
+                        help="Force distribution mode")
 
     # === Skeletonisation ===
     g_skel = parser.add_argument_group("Skeletonisation")
@@ -217,11 +219,13 @@ def main():
                           help="Fit cubic Bézier curves to beam skeleton edges (geometry/visualisation only)")
 
     # === Layout & Size Optimisation ===
-    g_opt = parser.add_argument_group("Layout & Size Optimisation")
-    g_opt.add_argument("--limit", type=float, default=5.0, help="Layout move limit (mm)")
+    g_opt = parser.add_argument_group("Optimization Configuration")
+    g_opt.add_argument("--optimize", action="store_true", help="Enable Beam Layout & Size Optimisation (default: False for hybrid mode)")
+    g_opt.add_argument("--iters", type=int, default=50, help="Max iterations for internal Top3D or Layout optimization")
+    g_opt.add_argument("--opt_loops", type=int, default=2, help="Number of Size + Layout iteration loops")
+    g_opt.add_argument("--limit", type=float, default=5.0, help="Move limit for layout optimization (mm)")
+    g_opt.add_argument("--prune_opt_thresh", type=float, default=0.0, help="Percentage (0.0-1.0) of max radius to prune dead-weight edges post-optimization")
     g_opt.add_argument("--snap", type=float, default=5.0, help="Snap distance for node merging (mm)")
-    g_opt.add_argument("--iters", type=int, default=50, help="Size opt iterations")
-    g_opt.add_argument("--opt_loops", type=int, default=1, help="Number of Layout+Size optimisation loops")
     g_opt.add_argument("--problem", type=str, default="tagged",
                        help="Problem config: 'tagged' (auto from BC tags), 'cantilever', 'rocker_arm'")
 
@@ -240,6 +244,16 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(args.output))[0]
+
+    # Resolve load_vec for TaggedProblem
+    if args.load_fx is not None or args.load_fy is not None or args.load_fz is not None:
+        load_vec = [
+            args.load_fx if args.load_fx is not None else 0.0,
+            args.load_fy if args.load_fy is not None else 0.0,
+            args.load_fz if args.load_fz is not None else 0.0
+        ]
+    else:
+        load_vec = None
 
     mode_str = "HYBRID BEAM+PLATE" if args.hybrid else "BEAM-ONLY"
     if args.curved:
@@ -274,10 +288,13 @@ def main():
             "--nelx", str(args.nelx), "--nely", str(args.nely), "--nelz", str(args.nelz),
             "--volfrac", str(args.volfrac), "--penal", str(args.penal),
             "--rmin", str(args.rmin), "--max_loop", str(args.max_loop),
-            "--load_fx", str(args.load_fx), "--load_fy", str(args.load_fy),
-            "--load_fz", str(args.load_fz),
+            "--load_dist", args.load_dist,
+            "--problem", args.problem if args.problem != "tagged" else "cantilever",
             "--output", npz_path,
         ]
+        if args.load_fx is not None: cmd += ["--load_fx", str(args.load_fx)]
+        if args.load_fy is not None: cmd += ["--load_fy", str(args.load_fy)]
+        if args.load_fz is not None: cmd += ["--load_fz", str(args.load_fz)]
         if args.load_x is not None: cmd += ["--load_x", str(args.load_x)]
         if args.load_y is not None: cmd += ["--load_y", str(args.load_y)]
         if args.load_z is not None: cmd += ["--load_z", str(args.load_z)]
@@ -299,10 +316,11 @@ def main():
         "--rdp_epsilon", str(args.rdp),
         "--radius_mode", args.radius_mode,
         "--vol_thresh", str(args.vol_thresh),
-        "--load_fx", str(args.load_fx),
-        "--load_fy", str(args.load_fy),
-        "--load_fz", str(args.load_fz),
     ]
+    if args.load_fx is not None: cmd += ["--load_fx", str(args.load_fx)]
+    if args.load_fy is not None: cmd += ["--load_fy", str(args.load_fy)]
+    if args.load_fz is not None: cmd += ["--load_fz", str(args.load_fz)]
+    
     # Hybrid-specific args
     if args.hybrid:
         cmd.append("--hybrid")
@@ -333,8 +351,13 @@ def main():
     has_plates = len(baseline_data.get('plates', [])) > 0
     plate_only = (n_beam_edges == 0 and has_plates)
 
-    if plate_only:
-        print(f"\n[Pipeline] Plate-only structure (0 beam edges). Skipping optimization stages.")
+    run_opt = (not plate_only) and (args.optimize or not args.hybrid)
+
+    if not run_opt:
+        if plate_only:
+            print(f"\n[Pipeline] Plate-only structure (0 beam edges). Skipping optimization stages.")
+        else:
+            print("\n[Pipeline] Hybrid structure detected without --optimize flag. Skipping Stages 2 & 3.")
         final_path = os.path.join(args.output_dir, args.output)
         shutil.copy2(stage1_out, final_path)
 
@@ -357,7 +380,10 @@ def main():
             print(f"[Warning] Could not create history: {e}")
 
         print(f"\n{'='*60}")
-        print("              PIPELINE COMPLETE (Plate-Only)")
+        if plate_only:
+            print("              PIPELINE COMPLETE (Plate-Only)")
+        else:
+            print("              PIPELINE COMPLETE (Unoptimized Hybrid)")
         print(f"{'='*60}")
         print(f"  Final Output:  {final_path}")
         print(f"{'='*60}")
@@ -380,7 +406,7 @@ def main():
     joints_data = baseline_data.get('joints', [])
 
     # Compute baseline compliance
-    problem_config = TaggedProblem(load_vector=[args.load_fx, args.load_fy, args.load_fz])
+    problem_config = TaggedProblem(load_vector=load_vec)
     problem_config.load_tags_from_json(stage1_out)
     c_baseline = _compute_compliance(baseline_data, problem_config, E=1000.0)
 
@@ -412,7 +438,7 @@ def main():
             edges_size = np.array([[e[0], e[1]] for e in edges_raw], dtype=int)
             radii_size = np.array([e[4] if len(e) >= 5 else e[2] for e in edges_raw])
 
-            size_problem = TaggedProblem(load_vector=[args.load_fx, args.load_fy, args.load_fz])
+            size_problem = TaggedProblem(load_vector=load_vec)
             size_problem.load_tags_from_json(current_json)
 
             radii_sized, c_size_init, c_size_final = optimize_size(
@@ -471,7 +497,7 @@ def main():
             radii_layout = np.array([e[2] for e in edges_raw])
             node_tags = {int(k): v for k, v in layout_input['graph'].get('node_tags', {}).items()}
 
-            layout_problem = TaggedProblem(load_vector=[args.load_fx, args.load_fy, args.load_fz])
+            layout_problem = TaggedProblem(load_vector=load_vec)
             layout_problem.load_tags_from_json(sized_json)
 
             nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final = optimize_layout(
@@ -480,6 +506,44 @@ def main():
                 target_volume_abs=target_volume, snap_dist=args.snap,
                 design_bounds=design_bounds, node_tags=node_tags
             )
+
+            # --- Post-Optimization Dead-Weight Pruning ---
+            if args.prune_opt_thresh > 0.0 and len(radii_opt) > 0:
+                max_r = np.max(radii_opt)
+                cutoff = max_r * args.prune_opt_thresh
+                
+                keep_edges = []
+                keep_radii = []
+                keep_node_indices = set(tags_opt.keys())  # Always keep tagged nodes
+                
+                # 1. Filter edges
+                for idx, r in enumerate(radii_opt):
+                    if r > cutoff:
+                        keep_edges.append(edges_opt[idx])
+                        keep_radii.append(r)
+                        keep_node_indices.add(edges_opt[idx][0])
+                        keep_node_indices.add(edges_opt[idx][1])
+                        
+                n_removed = len(radii_opt) - len(keep_edges)
+                if n_removed > 0:
+                    print(f"\n[Prune] Removing {n_removed} dead-weight edges (radius <= {cutoff:.3f} mm, {args.prune_opt_thresh*100:.1f}% of max {max_r:.2f} mm)")
+                    
+                    # 2. Filter nodes
+                    keep_node_indices = sorted(list(keep_node_indices))
+                    new_nodes = [nodes_opt[i] for i in keep_node_indices]
+                    
+                    # 3. Create mapping for edges
+                    old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(keep_node_indices)}
+                    
+                    # 4. Rebuild edges & tags
+                    new_edges = np.array([[old_to_new[e[0]], old_to_new[e[1]]] for e in keep_edges], dtype=int)
+                    new_tags = {old_to_new[k]: v for k, v in tags_opt.items() if k in old_to_new}
+                    
+                    nodes_opt = np.array(new_nodes)
+                    edges_opt = new_edges
+                    radii_opt = np.array(keep_radii)
+                    tags_opt = new_tags
+                    print(f"[Prune] Graph reduced to {len(nodes_opt)} nodes, {len(edges_opt)} edges.")
 
             curves_layout = _refit_curves(nodes_opt, edges_opt, radii_opt, args.curved)
 

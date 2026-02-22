@@ -125,6 +125,10 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
         u, compliance, _ = solve_frame(nodes, edges, radii, E=E, loads=loads, bcs=bcs)
         compliance_hist.append(compliance)
         
+        if np.isnan(compliance):
+            print("[ERROR] Beam Graph is singular or disconnected (NaN Compliance). Skipping Size Optimization.")
+            break
+            
         # 2. Gradient
         gradients = compute_sensitivities(nodes, edges.astype(int), radii, u, E=E)
         
@@ -145,6 +149,8 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
             
     if not compliance_hist: # Handle edge case
         compliance_hist = [0.0] * 2
+        
+    if 'vol_meas' not in locals():
         vol_meas = vol_init
             
             

@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.linalg import cg
-from scipy.spatial import cKDTree
+from scipy.sparse.linalg import spsolve, cg, LinearOperator
+from numba import njit, prange
 import time
 
 def lk_H8(nu):
@@ -58,7 +58,7 @@ def lk_H8(nu):
         [k[13], k[10], k[6], k[12], k[9], k[11]],
         [k[10], k[13], k[6], k[11], k[8], k[1]],
         [k[6], k[6], k[13], k[9], k[1], k[8]],
-        [k[12], k[11], k[9], k[13], k[6], k[10]],
+        [k[12], k[11], np.array(k[9]), k[13], k[6], k[10]],
         [k[9], k[8], k[1], k[6], k[13], k[6]],
         [k[11], k[1], k[8], k[10], k[6], k[13]]
     ])
@@ -94,20 +94,7 @@ class Top3D:
         
         self.x = np.full((nely, nelx, nelz), volfrac)
         self.xPhys = self.x.copy()
-
-        # Passive void elements (always zero density)
-        self.passive_void = None
-
-    def set_passive_void(self, mask):
-        """
-        Set a boolean mask (nely, nelx, nelz) of elements that are forced to
-        zero density (void) throughout optimization.
-        """
-        self.passive_void = mask.astype(bool)
-        # Pre-zero the initial densities so the first FE solve is consistent
-        self.x[self.passive_void] = 0.0
-        self.xPhys[self.passive_void] = 0.0
-
+        
     def set_load(self, load_dof, magnitude):
         self.f[load_dof] = magnitude
         
@@ -156,81 +143,88 @@ class Top3D:
 
     def optimize(self, max_loop=200, tolx=0.01):
         KE = lk_H8(0.3)
-
-        # Prepare Filter (KD-Tree vectorized)
+        
+        # Prepare Filter (Vectorized KD-Tree)
         print("Preparing Filter...")
         t0 = time.time()
-        H, Hs = self._prepare_filter_kdtree()
+        H, Hs = self._prepare_filter()
         print(f"Filter prepared in {time.time()-t0:.2f}s")
-
-        # Precompute EdofMat (vectorized)
+        
+        # Precompute EdofMat (Vectorized)
         print("Preparing EdofMat...")
         edofMat, iK, jK = self._prepare_edof_mat_vectorized()
-
+        
         # Main Loop
         loop = 0
         change = 1.0
-
+        
         print(f"Starting Optimization (Mesh: {self.nelx}x{self.nely}x{self.nelz})")
-
+        
         start_time = time.time()
-
+        
         while change > tolx and loop < max_loop:
             loop += 1
-
-            # xPhys flattened in F-order matches edofMat element ordering
+            
+            # 1. Setup Stiffness Matrix
+            # xPhys is (ny, nx, nz), flatten F-order matches element iteration
             x_flat = self.xPhys.flatten(order='F')
-
+            
             Emin = 1e-9
             E0 = 1.0
-
-            filt_stiff = Emin + x_flat**self.penal * (E0 - Emin)
+            
+            # Element stiffness scaling
+            filt_stiff = Emin + x_flat**self.penal * (E0 - Emin) 
+            
+            # Efficient K construction using broadcasting
             sK = (KE.flatten()[:, np.newaxis] @ filt_stiff[np.newaxis, :]).flatten(order='F')
-
             K = sp.coo_matrix((sK, (iK, jK)), shape=(self.ndof, self.ndof)).tocsc()
             K = (K + K.T) / 2.0
-
-            # Solve with CG + Jacobi preconditioner
+            
+            # 2. Solve System: K * u = f
             free_dofs = np.setdiff1d(np.arange(self.ndof), self.fixed_dofs)
+            
+            # Use Iterative Solver (CG) with Jacobi Preconditioner
             K_free = K[free_dofs, :][:, free_dofs]
             f_free = self.f[free_dofs].flatten()
-            M = sp.diags(1.0 / K_free.diagonal())
-            u_free, info = cg(K_free, f_free, M=M, rtol=1e-5, maxiter=5000)
+            
+            # u_free = spsolve(K[free_dofs, :][:, free_dofs], self.f[free_dofs])
+            
+            K_ff = K[free_dofs, :][:, free_dofs]
+            f_f = self.f[free_dofs]
+            
+            # Simple Jacobi Preconditioner
+            diag_K = K_ff.diagonal()
+            # Avoid division by zero
+            diag_K[diag_K == 0] = 1.0
+            M_inv = sp.diags(1.0 / diag_K)
+            
+            # Solve using Conjugate Gradient
+            u_free, info = cg(K_ff, f_f, M=M_inv, rtol=1e-5, maxiter=2000)
             if info > 0:
-                print(f"  Warning: CG did not converge (info={info})")
-
+                print(f"      [Warning] CG did not converge after {info} iterations.")
+            
             u = np.zeros(self.ndof)
             u[free_dofs] = u_free
-
-            # Sensitivity Analysis
-            u_ele = u[edofMat]
+            
+            # 3. Sensitivity Analysis
+            u_ele = u[edofMat] 
             ce = np.sum((u_ele @ KE) * u_ele, axis=1)
             c = np.sum((Emin + x_flat**self.penal * (E0 - Emin)) * ce)
-
+            
             dc = -self.penal * (E0 - Emin) * x_flat**(self.penal - 1) * ce
             dv = np.ones(self.nele)
-
-            # Filter Sensitivities
+            
+            # 4. Filtering Sensitivities
             dc[:] = H @ (dc / Hs)
             dv[:] = H @ (dv / Hs)
             
-            # Optimality Criteria
+            # 5. Optimality Criteria Update
             xnew_flat = self._optimality_criteria(x_flat, dc, dv)
             xnew = xnew_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-
-            # Enforce passive void (always zero density)
-            if self.passive_void is not None:
-                xnew[self.passive_void] = 0.0
-                xnew_flat = xnew.flatten(order='F')
-
-            # Filter Design Variable
-            # xPhys(:) = (H*xnew(:))./Hs
+            
+            # 6. Filter Design Variable
             xPhys_flat = H @ xnew_flat / Hs
             self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-
-            # Re-enforce passive void on physical density (filter can smear)
-            if self.passive_void is not None:
-                self.xPhys[self.passive_void] = 1e-9
             
             change = np.max(np.abs(xnew - self.x))
             self.x = xnew
@@ -241,63 +235,65 @@ class Top3D:
         return self.xPhys
 
     def _prepare_edof_mat_vectorized(self):
-        """Vectorized DOF matrix construction (8 passes, one per voxel corner)."""
+        """
+        Vectorized generation of edofMat (Top3D style)
+        """
         nx, ny, nz = self.nelx, self.nely, self.nelz
-        n_node = (nx + 1) * (ny + 1) * (nz + 1)
-        # F-order reshape: index order (ny+1, nx+1, nz+1)
-        node_grid = np.arange(n_node).reshape((ny + 1, nx + 1, nz + 1), order='F')
-        # Base node (corner 0) for every element
+        
+        # Node IDs grid
+        # MATLAB ordering: columns (Y) -> rows (X) -> depth (Z)
+        n_node = (nx+1)*(ny+1)*(nz+1)
+        node_grid = np.arange(n_node).reshape((ny+1, nx+1, nz+1), order='F')
+        
+        # Element base nodes (top-left-front corner of each voxel)
+        # We need (ny, nx, nz) base nodes
         node_base = node_grid[:-1, :-1, :-1].flatten(order='F')
-
-        # Stride offsets in F-order node numbering
-        sy = 1            # step in Y (fastest index)
-        sx = ny + 1       # step in X
-        sz = (ny + 1) * (nx + 1)  # step in Z
-        offsets = np.array([0, sx, sx + sy, sy, sz, sx + sz, sx + sy + sz, sy + sz])
-
+        
+        # Offsets to the 8 nodes of a voxel
+        # strides in F-order: 1 (y), ny+1 (x), (ny+1)*(nx+1) (z)
+        sy = 1
+        sx = ny + 1
+        sz = (ny + 1) * (nx + 1)
+        
+        offsets = np.array([
+            0,          # n1
+            sx,         # n2
+            sx + sy,    # n3
+            sy,         # n4
+            sz,         # n5
+            sx + sz,    # n6
+            sx + sy + sz, # n7
+            sy + sz     # n8
+        ])
+        
         edofMat = np.zeros((self.nele, 24), dtype=int)
+        
         for i in range(8):
+            # Nodes for all elements
             nodes = node_base + offsets[i]
-            edofMat[:, 3 * i]     = 3 * nodes
-            edofMat[:, 3 * i + 1] = 3 * nodes + 1
-            edofMat[:, 3 * i + 2] = 3 * nodes + 2
-
+            # DOFs
+            edofMat[:, 3*i]   = 3*nodes
+            edofMat[:, 3*i+1] = 3*nodes + 1
+            edofMat[:, 3*i+2] = 3*nodes + 2
+            
         iK = np.kron(edofMat, np.ones((24, 1))).flatten()
         jK = np.kron(edofMat, np.ones((1, 24))).flatten()
+        
         return edofMat, iK, jK
 
-    def _prepare_filter_kdtree(self):
-        """KD-Tree filter preparation — replaces 6-nested-loop version."""
+    def _prepare_filter(self):
+        # Standard distance filter accelerated with Numba
         nx, ny, nz = self.nelx, self.nely, self.nelz
         rmin = self.rmin
         nele = self.nele
-
-        # Element centroids in F-order (matches xPhys.flatten(order='F'))
-        y_range = np.arange(ny) + 0.5
-        x_range = np.arange(nx) + 0.5
-        z_range = np.arange(nz) + 0.5
-        yy, xx, zz = np.meshgrid(y_range, x_range, z_range, indexing='ij')
-        centroids = np.column_stack([
-            xx.flatten(order='F'),
-            yy.flatten(order='F'),
-            zz.flatten(order='F'),
-        ])
-
-        tree = cKDTree(centroids)
-        indices = tree.query_ball_point(centroids, rmin)
-
-        iH, jH, sH = [], [], []
-        for i, neighbors in enumerate(indices):
-            if not neighbors:
-                continue
-            dists = np.linalg.norm(centroids[neighbors] - centroids[i], axis=1)
-            weights = np.maximum(0, rmin - dists)
-            iH.extend([i] * len(neighbors))
-            jH.extend(neighbors)
-            sH.extend(weights)
-
-        H = sp.coo_matrix((sH, (iH, jH)), shape=(nele, nele)).tocsc()
+        
+        # We'll use a dense-ish pre-calculation or a focused loop
+        # For Numba compatibility, we pass necessary dimensions
+        iH, jH, sH = fast_filter_prep(nx, ny, nz, rmin)
+        
+        H = sp.coo_matrix((sH, (iH, jH)), shape=(self.nele, self.nele)).tocsc()
         Hs = np.array(H.sum(axis=1)).flatten()
+        
         return H, Hs
 
     def _optimality_criteria(self, x, dc, dv):
@@ -340,3 +336,67 @@ class Top3D:
                 l2 = lmid
                 
         return xnew
+
+@njit(parallel=True)
+def fast_filter_prep(nx, ny, nz, rmin):
+    """
+    Parallel preparation of filter indices and weights.
+    """
+    nele = nx * ny * nz
+    # Heuristic for space allocation (rmin dependent)
+    # Approx volume of sphere of radius rmin / vol of element
+    est_entries = nele * int(4.18 * rmin**3) 
+    
+    iH = np.zeros(est_entries, dtype=np.int32)
+    jH = np.zeros(est_entries, dtype=np.int32)
+    sH = np.zeros(est_entries, dtype=np.float32)
+    
+    ptr = 0
+    rmin_int = int(np.floor(rmin))
+    
+    # We can't easily sync 'ptr' in a parallel loop without a mutex or block-wise allocation.
+    # Instead, we'll do a 2-pass approach or just use a serial loop for ptr-safety, 
+    # but the inner check can be optimized or we can parallelize outer k1.
+    
+    # Accurate count pass per k1 slice
+    counts_per_k = np.zeros(nz, dtype=np.int32)
+    for k1 in prange(nz):
+        c = 0
+        for i1 in range(nx):
+            for j1 in range(ny):
+                for k2 in range(max(k1 - rmin_int, 0), min(k1 + rmin_int + 1, nz)):
+                    for i2 in range(max(i1 - rmin_int, 0), min(i1 + rmin_int + 1, nx)):
+                        for j2 in range(max(j1 - rmin_int, 0), min(j1 + rmin_int + 1, ny)):
+                            dist = np.sqrt((i1 - i2)**2 + (j1 - j2)**2 + (k1 - k2)**2)
+                            if dist < rmin:
+                                c += 1
+        counts_per_k[k1] = c
+        
+    # Offsets for writing
+    offsets = np.zeros(nz + 1, dtype=np.int32)
+    for k in range(nz):
+        offsets[k+1] = offsets[k] + counts_per_k[k]
+        
+    total_entries = offsets[nz]
+    iH_final = np.zeros(total_entries, dtype=np.int32)
+    jH_final = np.zeros(total_entries, dtype=np.int32)
+    sH_final = np.zeros(total_entries, dtype=np.float32)
+    
+    # Writing pass (Parallel)
+    for k1 in prange(nz):
+        write_ptr = offsets[k1]
+        for i1 in range(nx):
+            for j1 in range(ny):
+                e1 = k1 * (nx * ny) + i1 * ny + j1
+                for k2 in range(max(k1 - rmin_int, 0), min(k1 + rmin_int + 1, nz)):
+                    for i2 in range(max(i1 - rmin_int, 0), min(i1 + rmin_int + 1, nx)):
+                        for j2 in range(max(j1 - rmin_int, 0), min(j1 + rmin_int + 1, ny)):
+                            dist = np.sqrt((i1 - i2)**2 + (j1 - j2)**2 + (k1 - k2)**2)
+                            if dist < rmin:
+                                e2 = k2 * (nx * ny) + i2 * ny + j2
+                                iH_final[write_ptr] = e1
+                                jH_final[write_ptr] = e2
+                                sH_final[write_ptr] = rmin - dist
+                                write_ptr += 1
+                                
+    return iH_final, jH_final, sH_final

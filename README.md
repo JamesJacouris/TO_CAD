@@ -163,3 +163,115 @@ python run_pipeline.py \
   --vol_thresh 0.28 \
   --visualize \
   --output rocker_arm_final.json
+
+
+
+
+
+## HYBRID TEST CASES
+
+BEST PARAMS FOR TEST CASE
+
+python run_pipeline.py
+--skip_top3d
+--top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz
+--hybrid
+--output Roof_Structure_strict.json
+--min_plate_size 8
+--flatness_ratio 7
+--min_avg_neighbors 3
+--visualize
+
+Full Input
+
+python run_pipeline.py
+--skip_top3d
+--top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz
+--hybrid
+--output Roof_Structure_strict.json
+--visualize
+--pitch 1.0
+--max_iters 50
+--vol_thresh 0.3
+--plate_thickness_ratio 0.15
+--detect_plates auto
+--min_plate_size 8
+--flatness_ratio 7
+--junction_thresh 4
+--min_avg_neighbors 3
+--prune_len 2.0
+--collapse_thresh 2.0
+--rdp 2.0
+--snap 5.0
+--radius_mode uniform
+
+python run_pipeline.py
+--skip_top3d
+--top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz
+--hybrid --output Roof_Structure.json
+--min_plate_size 10 --flatness_ratio 4 --junction_thresh 4 --visualize
+
+Parameters:
+
+--min_plate_size (default: 4) — Minimum voxels for plate classification --flatness_ratio (default: 3.0) — PCA eigenvalue ratio threshold --junction_thresh (default: 4) — Neighbor count for junction detection
+
+
+
+
+
+python run_pipeline.py \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --skip_top3d \
+  --visualize \
+  --hybrid \
+  --output Roof_Structure_strict.json \
+  --pitch 1.0 \
+  --max_iters 50 \
+  --vol_thresh 0.3 \
+  --plate_thickness_ratio 0.15 \
+  --detect_plates auto \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --junction_thresh 4 \
+  --min_avg_neighbors 3 \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --curved \
+  --radius_mode uniform
+
+
+
+
+
+
+
+  # ROOF STRUCTURE TEST CASE FULL Top3D Input - NOT CORRECT OR WORKING
+
+  python run_pipeline.py \
+  --nelx 40 --nely 40 --nelz 20 \
+  --volfrac 0.05 --penal 3.0 --rmin 1.5 --max_loop 100 \
+  --load_fx 0.0 --load_fy 0.0 --load_fz -100.0 \
+  --problem roof \
+  --pitch 1.0 \
+  --max_iters 50 \
+  --prune_len 4.15 \
+  --collapse_thresh 3.84 \
+  --rdp 0.78 \
+  --radius_mode uniform \
+  --vol_thresh 0.3 \
+  --plate_thickness_ratio 0.15 \
+  --detect_plates auto \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --junction_thresh 4 \
+  --min_avg_neighbors 3 \
+  --hybrid \
+  --limit 5.0 \ 
+  --snap 5.0 \
+  --iters 50 \
+  --skip_top3d \
+  --output_dir output/hybrid_v2 \
+  --visualize \
+  --output Roof_Structure_Test.json

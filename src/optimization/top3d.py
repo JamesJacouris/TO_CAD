@@ -73,26 +73,13 @@ def lk_H8(nu):
     return KE
 
 class Top3D:
-    def __init__(self, nelx, nely, nelz, volfrac, penal, rmin,
-                 use_p_continuation=True):
-        """Initialise a 3-D SIMP topology optimiser.
-
-        Args:
-            nelx, nely, nelz (int): Number of elements along each axis.
-            volfrac (float): Target volume fraction in (0, 1].
-            penal (float): SIMP penalty exponent (typically 3.0).
-            rmin (float): Filter radius in element units.
-            use_p_continuation (bool): Ramp the penalty exponent from 1.0 to
-                ``penal`` over the first 60 iterations to avoid poor local
-                minima (Bendsøe & Sigmund, 2004).  Defaults to True.
-        """
+    def __init__(self, nelx, nely, nelz, volfrac, penal, rmin):
         self.nelx = nelx
         self.nely = nely
         self.nelz = nelz
         self.volfrac = volfrac
         self.penal = penal
         self.rmin = rmin
-        self.use_p_continuation = use_p_continuation
         
         self.nele = nelx * nely * nelz
         self.ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1)
@@ -158,115 +145,110 @@ class Top3D:
         """Run the topology optimisation loop (OC method).
 
         Iteratively updates element densities using an optimality criteria (OC)
-        update scheme with a density filter and optional p-continuation.
+        update scheme with a density filter.  Convergence is declared when the
+        maximum density change between successive iterations falls below
+        ``tolx``.
 
         Args:
             max_loop (int): Maximum number of OC iterations.  Defaults to 200.
-            tolx (float): Convergence threshold on max density change between
-                successive OC updates.  Defaults to 0.01.
+            tolx (float): Convergence threshold on max density change.
+                Iteration stops when ``change <= tolx``.  Defaults to 0.01.
 
         Returns:
             numpy.ndarray: Physical density field ``xPhys`` with shape
             ``(nely, nelx, nelz)``, values in ``[0, 1]``.  Voxels above the
             volume fraction threshold represent retained material.
-
-        Notes:
-            **p-continuation** (when ``use_p_continuation=True``): the SIMP
-            penalty is linearly ramped from 1.0 → ``penal`` over the first
-            ``min(max_loop, 60)`` iterations.  Starting from p=1 keeps the
-            problem nearly convex early on, avoiding poor local minima
-            (Bendsøe & Sigmund, 2004).
         """
         KE = lk_H8(0.3)
-
+        
         # Prepare Filter (Vectorized KD-Tree)
         print("Preparing Filter...")
         t0 = time.time()
         H, Hs = self._prepare_filter()
         print(f"Filter prepared in {time.time()-t0:.2f}s")
-
+        
         # Precompute EdofMat (Vectorized)
         print("Preparing EdofMat...")
         edofMat, iK, jK = self._prepare_edof_mat_vectorized()
-
-        # Precompute p-continuation ramp endpoint
-        p_ramp_end = min(max_loop, 60)
-
+        
         # Main Loop
         loop = 0
         change = 1.0
-
+        
         print(f"Starting Optimization (Mesh: {self.nelx}x{self.nely}x{self.nelz})")
-        if self.use_p_continuation:
-            print(f"  p-continuation: 1.0 → {self.penal} over {p_ramp_end} iterations")
-
+        
         start_time = time.time()
-
+        
         while change > tolx and loop < max_loop:
             loop += 1
-
-            # ── P-continuation: ramp penalty 1.0 → penal ────────────────────
-            if self.use_p_continuation:
-                penal_now = 1.0 + (self.penal - 1.0) * min(loop, p_ramp_end) / p_ramp_end
-            else:
-                penal_now = self.penal
-
-            # ── 1. Filter design variables → physical densities ──────────────
-            x_flat = self.x.flatten(order='F')
-            xPhys_flat = H @ x_flat / Hs
-            self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-
+            
+            # 1. Setup Stiffness Matrix
+            # xPhys is (ny, nx, nz), flatten F-order matches element iteration
+            x_flat = self.xPhys.flatten(order='F')
+            
             Emin = 1e-9
             E0 = 1.0
-
-            # ── 2. Setup Stiffness Matrix ────────────────────────────────────
-            filt_stiff = Emin + xPhys_flat**penal_now * (E0 - Emin)
-
+            
+            # Element stiffness scaling
+            filt_stiff = Emin + x_flat**self.penal * (E0 - Emin) 
+            
+            # Efficient K construction using broadcasting
             sK = (KE.flatten()[:, np.newaxis] @ filt_stiff[np.newaxis, :]).flatten(order='F')
             K = sp.coo_matrix((sK, (iK, jK)), shape=(self.ndof, self.ndof)).tocsc()
             K = (K + K.T) / 2.0
-
-            # ── 3. Solve System: K u = f (CG + Jacobi preconditioner) ───────
+            
+            # 2. Solve System: K * u = f
             free_dofs = np.setdiff1d(np.arange(self.ndof), self.fixed_dofs)
-
+            
+            # Use Iterative Solver (CG) with Jacobi Preconditioner
+            K_free = K[free_dofs, :][:, free_dofs]
+            f_free = self.f[free_dofs].flatten()
+            
+            # u_free = spsolve(K[free_dofs, :][:, free_dofs], self.f[free_dofs])
+            
             K_ff = K[free_dofs, :][:, free_dofs]
             f_f = self.f[free_dofs]
-
+            
+            # Simple Jacobi Preconditioner
             diag_K = K_ff.diagonal()
+            # Avoid division by zero
             diag_K[diag_K == 0] = 1.0
             M_inv = sp.diags(1.0 / diag_K)
-
+            
+            # Solve using Conjugate Gradient
             u_free, info = cg(K_ff, f_f, M=M_inv, rtol=1e-5, maxiter=2000)
             if info > 0:
                 print(f"      [Warning] CG did not converge after {info} iterations.")
-
+            
             u = np.zeros(self.ndof)
             u[free_dofs] = u_free
-
-            # ── 4. Sensitivity Analysis ──────────────────────────────────────
-            u_ele = u[edofMat]
+            
+            # 3. Sensitivity Analysis
+            u_ele = u[edofMat] 
             ce = np.sum((u_ele @ KE) * u_ele, axis=1)
-            c = np.sum(filt_stiff * ce)
-
-            dc = -penal_now * (E0 - Emin) * xPhys_flat**(penal_now - 1) * ce
+            c = np.sum((Emin + x_flat**self.penal * (E0 - Emin)) * ce)
+            
+            dc = -self.penal * (E0 - Emin) * x_flat**(self.penal - 1) * ce
             dv = np.ones(self.nele)
-
-            # ── 5. Filter Sensitivities (adjoint of density filter) ──────────
+            
+            # 4. Filtering Sensitivities
             dc[:] = H @ (dc / Hs)
             dv[:] = H @ (dv / Hs)
-
-            # ── 6. Optimality Criteria Update ────────────────────────────────
+            
+            # 5. Optimality Criteria Update
             xnew_flat = self._optimality_criteria(x_flat, dc, dv)
             xnew = xnew_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-
+            
+            # 6. Filter Design Variable
+            xPhys_flat = H @ xnew_flat / Hs
+            self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
+            
             change = np.max(np.abs(xnew - self.x))
             self.x = xnew
-
-            p_str = f" p={penal_now:.2f}" if self.use_p_continuation else ""
-            print(f" It.: {loop:4d} Obj.: {c:10.4f} Vol.: {np.mean(self.xPhys):6.3f}"
-                  f" ch.: {change:6.3f}{p_str}")
-
-        print(f"Optimization converged in {time.time() - start_time:.2f}s")
+            
+            print(f" It.: {loop:4d} Obj.: {c:10.4f} Vol.: {np.mean(self.xPhys):6.3f} ch.: {change:6.3f}")
+            
+        print(f"Optimization Converged in {time.time() - start_time:.2f}s")
         return self.xPhys
 
     def _prepare_edof_mat_vectorized(self):

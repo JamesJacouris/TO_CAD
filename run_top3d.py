@@ -20,15 +20,11 @@ def main():
     parser.add_argument("--load_fy", type=float, default=-1.0, help="Load Y Magnitude")
     parser.add_argument("--load_fz", type=float, default=0.0, help="Load Z Magnitude")
     # Output and Control
-    parser.add_argument("--top3d_iters", "--max_loop", type=int, default=50, help="Max Iterations")
+    parser.add_argument("--max_loop", type=int, default=50, help="Max Iterations")
     parser.add_argument("--output", default="python_top3d_result.npz", help="Output .npz file")
     # Problem Type
     parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "roof_slab", "bridge", "deck"], help="Problem type")
     parser.add_argument("--load_dist", type=str, default="point", choices=["point", "surface_top", "surface_bottom"], help="Load distribution")
-    # Quality improvements
-    parser.add_argument("--no-p-continuation", dest="use_p_continuation", action="store_false",
-                        help="Disable p-continuation penalty ramp (enabled by default)")
-    parser.set_defaults(use_p_continuation=True)
     
     args = parser.parse_args()
     
@@ -36,8 +32,7 @@ def main():
     print(f"Mesh: {args.nelx}x{args.nely}x{args.nelz}, VolFrac: {args.volfrac}")
     
     # Initialize Solver
-    solver = Top3D(args.nelx, args.nely, args.nelz, args.volfrac, args.penal, args.rmin,
-                   use_p_continuation=args.use_p_continuation)
+    solver = Top3D(args.nelx, args.nely, args.nelz, args.volfrac, args.penal, args.rmin)
     
     # --- Define Problem Boundary Conditions ---
     # Top3D node ordering (F-order): Y varies fastest, then X, then Z
@@ -56,13 +51,13 @@ def main():
         for (cx, cy, cz) in corners:
             dist = (il_flat - cx)**2 + (jl_flat - cy)**2 + (kl_flat - cz)**2
             fixed_node_indices.append(np.argmin(dist))
-
+        
         fixed_dofs_list = []
         for n in fixed_node_indices:
             fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
         solver.set_fixed_dofs(np.array(fixed_dofs_list))
         print(f"Fixed {len(fixed_node_indices)} Corner Nodes at Z=0 (2x2 Support Pillars).")
-
+        
         # Default Load for Roof: Distributed across top surface
         if args.load_x is None and args.load_dist == "point":
             args.load_dist = "surface_top"
@@ -167,7 +162,7 @@ def main():
         print(f"Force Vector: [{args.load_fx}, {args.load_fy}, {args.load_fz}]")
 
     # Change Iterations
-    xPhys = solver.optimize(max_loop=args.top3d_iters) 
+    xPhys = solver.optimize(max_loop=args.max_loop) 
     
     # Export
     # Save rho, bc_tags, pitch, origin as .npz (compressed dict)

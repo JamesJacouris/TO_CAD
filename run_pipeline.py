@@ -172,10 +172,7 @@ def main():
     g_top3d.add_argument("--volfrac", type=float, default=0.3, help="Volume fraction")
     g_top3d.add_argument("--penal", type=float, default=3.0, help="Penalization factor")
     g_top3d.add_argument("--rmin", type=float, default=1.5, help="Filter radius (R)")
-    g_top3d.add_argument("--top3d_iters", "--max_loop", type=int, default=50, help="Max Top3D iterations")
-    g_top3d.add_argument("--no-p-continuation", dest="use_p_continuation", action="store_false",
-                         help="Disable p-continuation ramp in Top3D (on by default)")
-    parser.set_defaults(use_p_continuation=True)
+    g_top3d.add_argument("--max_loop", type=int, default=50, help="Max Top3D iterations")
 
     # === Load Definition ===
     g_load = parser.add_argument_group("Load Definition")
@@ -191,7 +188,7 @@ def main():
     # === Skeletonisation ===
     g_skel = parser.add_argument_group("Skeletonisation")
     g_skel.add_argument("--pitch", type=float, default=1.0, help="Voxel size (mm)")
-    g_skel.add_argument("--skel_iters", "--max_iters", type=int, default=50, help="Max thinning iterations")
+    g_skel.add_argument("--max_iters", type=int, default=50, help="Max thinning iterations")
     g_skel.add_argument("--prune_len", type=float, default=2.0, help="Prune branches < X mm")
     g_skel.add_argument("--collapse_thresh", type=float, default=2.0, help="Collapse edges < X mm")
     g_skel.add_argument("--rdp", type=float, default=1.0, help="RDP simplification epsilon (0=off)")
@@ -225,9 +222,9 @@ def main():
     # === Layout & Size Optimisation ===
     g_opt = parser.add_argument_group("Optimization Configuration")
     g_opt.add_argument("--optimize", action="store_true", help="Enable Beam Layout & Size Optimisation (default: False for hybrid mode)")
-    g_opt.add_argument("--opt_iters", "--iters", type=int, default=50, help="Max iterations for internal Top3D or Layout optimization")
+    g_opt.add_argument("--iters", type=int, default=50, help="Max iterations for internal Top3D or Layout optimization")
     g_opt.add_argument("--opt_loops", type=int, default=2, help="Number of Size + Layout iteration loops")
-    g_opt.add_argument("--move_limit", "--limit", type=float, default=5.0, help="Move limit for layout optimization (mm)")
+    g_opt.add_argument("--limit", type=float, default=5.0, help="Move limit for layout optimization (mm)")
     g_opt.add_argument("--prune_opt_thresh", type=float, default=0.0, help="Percentage (0.0-1.0) of max radius to prune dead-weight edges post-optimization")
     g_opt.add_argument("--snap", type=float, default=5.0, help="Snap distance for node merging (mm)")
     g_opt.add_argument("--problem", type=str, default="tagged",
@@ -236,17 +233,17 @@ def main():
     # === Output & Visualisation ===
     g_out = parser.add_argument_group("Output & Visualisation")
     g_out.add_argument("--output", type=str, default="full_control_beam.json", help="Final output JSON filename")
-    g_out.add_argument("--out_dir", "--output_dir", type=str, default="output/hybrid_v2", help="Output directory")
+    g_out.add_argument("--output_dir", type=str, default="output/hybrid_v2", help="Output directory")
     g_out.add_argument("--visualize", action="store_true", help="Show 3D debug windows")
 
     # === Skip Stages ===
     g_skip = parser.add_argument_group("Advanced")
     g_skip.add_argument("--skip_top3d", action="store_true", help="Skip Stage 0 (use existing .npz)")
-    g_skip.add_argument("--npz_path", "--top3d_npz", type=str, default=None, help="Path to existing .npz")
+    g_skip.add_argument("--top3d_npz", type=str, default=None, help="Path to existing .npz")
 
     args = parser.parse_args()
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(args.output))[0]
 
     # Resolve load_vec for TaggedProblem
@@ -271,17 +268,17 @@ def main():
     print(f"  VolFrac:   {args.volfrac}")
     print(f"  Load:      [{args.load_fx}, {args.load_fy}, {args.load_fz}]")
     print(f"  Problem:   {args.problem}")
-    print(f"  Output:    {args.out_dir}/{args.output}")
+    print(f"  Output:    {args.output_dir}/{args.output}")
     print("=" * 60)
 
     # ========================================
     # STAGE 0: Python Top3D
     # ========================================
-    npz_path = os.path.join(args.out_dir, f"{base_name}_top3d.npz")
+    npz_path = os.path.join(args.output_dir, f"{base_name}_top3d.npz")
 
     if args.skip_top3d:
-        if args.npz_path:
-            npz_path = args.npz_path
+        if args.top3d_npz:
+            npz_path = args.top3d_npz
         if not os.path.exists(npz_path):
             print(f"[FATAL] --skip_top3d specified but NPZ not found: {npz_path}")
             return 1
@@ -291,7 +288,7 @@ def main():
             sys.executable, os.path.join(SCRIPT_DIR, "run_top3d.py"),
             "--nelx", str(args.nelx), "--nely", str(args.nely), "--nelz", str(args.nelz),
             "--volfrac", str(args.volfrac), "--penal", str(args.penal),
-            "--rmin", str(args.rmin), "--max_loop", str(args.top3d_iters),
+            "--rmin", str(args.rmin), "--max_loop", str(args.max_loop),
             "--load_dist", args.load_dist,
             "--problem", args.problem if args.problem != "tagged" else "cantilever",
             "--output", npz_path,
@@ -302,7 +299,6 @@ def main():
         if args.load_x is not None: cmd += ["--load_x", str(args.load_x)]
         if args.load_y is not None: cmd += ["--load_y", str(args.load_y)]
         if args.load_z is not None: cmd += ["--load_z", str(args.load_z)]
-        if not args.use_p_continuation: cmd += ["--no-p-continuation"]
 
         if not run_stage(cmd, "STAGE 0: Python Top3D Topology Optimisation"):
             return 1
@@ -310,7 +306,7 @@ def main():
     # ========================================
     # STAGE 1: Baseline Yin Reconstruction
     # ========================================
-    stage1_out = os.path.join(args.out_dir, f"{base_name}_1_reconstructed.json")
+    stage1_out = os.path.join(args.output_dir, f"{base_name}_1_reconstructed.json")
 
     print(f"\n{'='*60}")
     print("  STAGE 1: Skeleton Reconstruction")
@@ -318,7 +314,7 @@ def main():
     try:
         reconstruct_npz(
             npz_path, stage1_out,
-            pitch=args.pitch, max_iters=args.skel_iters,
+            pitch=args.pitch, max_iters=args.max_iters,
             collapse_thresh=args.collapse_thresh, prune_len=args.prune_len,
             rdp_epsilon=args.rdp, radius_mode=args.radius_mode,
             vol_thresh=args.vol_thresh,
@@ -357,7 +353,7 @@ def main():
             print(f"\n[Pipeline] Plate-only structure (0 beam edges). Skipping optimization stages.")
         else:
             print("\n[Pipeline] Hybrid structure detected without --optimize flag. Skipping Stages 2 & 3.")
-        final_path = os.path.join(args.out_dir, args.output)
+        final_path = os.path.join(args.output_dir, args.output)
         shutil.copy2(stage1_out, final_path)
 
         # Still create history
@@ -371,7 +367,7 @@ def main():
                 "joints": baseline_data.get("joints", []),
                 "graph": baseline_data.get("graph", {})
             }
-            hist_path = os.path.join(args.out_dir, f"{base_name}_history.json")
+            hist_path = os.path.join(args.output_dir, f"{base_name}_history.json")
             with open(hist_path, 'w') as f:
                 json.dump(history, f, indent=2)
             print(f"[Export] Pipeline history: {hist_path}")
@@ -426,7 +422,7 @@ def main():
 
         # --- STAGE 2: Size Optimisation (FIRST) ---
         print(f"\n[Iter {loop_num}] STAGE 2: Size Optimisation")
-        sized_json = os.path.join(args.out_dir, f"{base_name}_3_sized{suffix}.json")
+        sized_json = os.path.join(args.output_dir, f"{base_name}_3_sized{suffix}.json")
 
         try:
             with open(current_json, 'r') as f:
@@ -442,7 +438,7 @@ def main():
 
             radii_sized, c_size_init, c_size_final = optimize_size(
                 nodes_size, edges_size, radii_size, size_problem,
-                E=1000.0, vol_fraction=1.0, max_iter=args.opt_iters,
+                E=1000.0, vol_fraction=1.0, max_iter=args.iters,
                 visualize=args.visualize, target_volume_abs=target_volume
             )
 
@@ -484,7 +480,7 @@ def main():
 
         # --- STAGE 3: Layout Optimisation (SECOND) ---
         print(f"\n[Iter {loop_num}] STAGE 3: Layout Optimisation")
-        layout_json = os.path.join(args.out_dir, f"{base_name}_2_layout{suffix}.json")
+        layout_json = os.path.join(args.output_dir, f"{base_name}_2_layout{suffix}.json")
 
         try:
             with open(sized_json, 'r') as f:
@@ -501,7 +497,7 @@ def main():
 
             nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final = optimize_layout(
                 nodes_layout, edges_layout, radii_layout, layout_problem,
-                E=1000.0, move_limit=args.move_limit, visualize=args.visualize,
+                E=1000.0, move_limit=args.limit, visualize=args.visualize,
                 target_volume_abs=target_volume, snap_dist=args.snap,
                 design_bounds=design_bounds, node_tags=node_tags
             )
@@ -583,8 +579,8 @@ def main():
             traceback.print_exc()
             return 1
 
-    stage2_out = os.path.join(args.out_dir, f"{base_name}_2_layout_loop{args.opt_loops}.json")
-    stage3_out = os.path.join(args.out_dir, f"{base_name}_3_sized_loop{args.opt_loops}.json")
+    stage2_out = os.path.join(args.output_dir, f"{base_name}_2_layout_loop{args.opt_loops}.json")
+    stage3_out = os.path.join(args.output_dir, f"{base_name}_3_sized_loop{args.opt_loops}.json")
 
     # ========================================
     # Print Comparison Table
@@ -595,7 +591,7 @@ def main():
     # ========================================
     # FINAL: Copy final output to requested name
     # ========================================
-    final_path = os.path.join(args.out_dir, args.output)
+    final_path = os.path.join(args.output_dir, args.output)
     shutil.copy2(stage2_out, final_path)
 
     # ========================================
@@ -612,7 +608,7 @@ def main():
             "graph": baseline_data.get("graph", {})
         }
 
-        hist_path = os.path.join(args.out_dir, f"{base_name}_history.json")
+        hist_path = os.path.join(args.output_dir, f"{base_name}_history.json")
         with open(hist_path, 'w') as f:
             json.dump(history, f, indent=2)
         stage_names = [s["name"] for s in all_stages]

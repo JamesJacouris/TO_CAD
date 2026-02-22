@@ -181,37 +181,7 @@ def export_to_json(nodes_dict, edges, output_path, pitch, history=None, target_v
         json.dump(data, f, indent=2, cls=NumpyEncoder)
     print(f"[Export] Saved {len(curves)} segments and {len(plates) if plates else 0} plates to {output_path}")
 
-def main():
-    parser = argparse.ArgumentParser(description="Baseline Yin 3D Skeletonization Pipeline")
-    parser.add_argument("input_mesh", help="Input STL")
-    parser.add_argument("output_json", help="Output JSON")
-    parser.add_argument("--pitch", type=float, default=1.0, help="Voxel Size")
-    parser.add_argument("--max_iters", type=int, default=50, help="Thinning iterations")
-    parser.add_argument("--collapse_thresh", type=float, default=2.0, help="Collapse edges < X")
-    parser.add_argument("--prune_len", type=float, default=5.0, help="Prune branches < X")
-    parser.add_argument("--rdp_epsilon", type=float, default=0.0, help="RDP Geometric Simplification Epsilon (0 = off)")
-    parser.add_argument("--radius_mode", type=str, default="edt", choices=["edt", "uniform"], 
-                        help="Radius Strategy: 'edt' (Geometric) or 'uniform' (Volume Matching)")
-    parser.add_argument("--visualize", action="store_true", help="Show debug windows")
-    parser.add_argument("--vol_thresh", type=float, default=0.3, help="Volume Threshold for NPZ (default: 0.3)")
-    parser.add_argument("--hybrid", action="store_true", help="Enable Beam-Plate Hybrid Mode")
-    parser.add_argument("--detect_plates", type=str, default="auto", choices=["auto", "off", "force"], help="Plate detection: auto, off, force")
-    parser.add_argument("--plate_thickness_ratio", type=float, default=0.15, help="Max plate half-thickness as fraction of domain diagonal (default: 0.15)")
-    # Post-thinning classification parameters
-    parser.add_argument("--min_plate_size", type=int, default=4, help="Minimum voxels for a fragment to be classified as plate (default: 4)")
-    parser.add_argument("--flatness_ratio", type=float, default=3.0, help="PCA eigenvalue ratio threshold for flatness detection (default: 3.0)")
-    parser.add_argument("--junction_thresh", type=int, default=4, help="Neighbor count threshold for junction detection (default: 4)")
-    parser.add_argument("--min_avg_neighbors", type=float, default=3.0, help="Minimum average neighbor count to classify as plate (default: 3.0)")
-    # Note: --planarity_thresh and --linearity_thresh removed — post-thinning
-    # topological classification (Yin Def 3.14) needs no tunable thresholds
-    parser.add_argument("--load_fx", type=float, default=None, help="Load force X component")
-    parser.add_argument("--load_fy", type=float, default=None, help="Load force Y component")
-    parser.add_argument("--load_fz", type=float, default=None, help="Load force Z component")
-    parser.add_argument("--plate_mode", type=str, default="bspline", choices=["bspline", "voxel", "mesh"],
-                        help="Plate reconstruction mode")
-    parser.add_argument("--curved", action="store_true",
-                        help="Fit cubic Bézier curves to beam skeleton edges (geometry/visualisation only)")
-    args = parser.parse_args()
+def _run(args):
 
     # Derive output directory and base name
     output_dir = os.path.dirname(args.output_json) or "."
@@ -483,6 +453,59 @@ def main():
 
     export_to_json(nodes_dict, edges_list_raw, args.output_json, args.pitch, history=history_snapshots, target_volume=voxel_vol, design_bounds=mesh_bounds.tolist(), node_tags=node_tags, plates=plates_data, plate_mode=args.plate_mode, curved=args.curved, load_force=load_force, vol_thresh=args.vol_thresh)
     print("Done.")
+
+def reconstruct_npz(npz_path, output_json, **kwargs):
+    """Direct Python API — mirrors all CLI flags of reconstruct.py.
+
+    Args:
+        npz_path:    Path to Top3D .npz output file.
+        output_json: Destination JSON path.
+        **kwargs:    Any CLI flag as a keyword argument (pitch, max_iters,
+                     collapse_thresh, prune_len, rdp_epsilon, radius_mode,
+                     vol_thresh, hybrid, detect_plates, plate_thickness_ratio,
+                     min_plate_size, flatness_ratio, junction_thresh,
+                     min_avg_neighbors, load_fx, load_fy, load_fz,
+                     plate_mode, curved, visualize).
+    """
+    import types
+    defaults = dict(
+        pitch=1.0, max_iters=50, collapse_thresh=2.0, prune_len=5.0,
+        rdp_epsilon=0.0, radius_mode='edt', vol_thresh=0.3,
+        hybrid=False, detect_plates='auto', plate_thickness_ratio=0.15,
+        min_plate_size=4, flatness_ratio=3.0, junction_thresh=4,
+        min_avg_neighbors=3.0, load_fx=None, load_fy=None, load_fz=None,
+        plate_mode='bspline', curved=False, visualize=False,
+    )
+    defaults.update(kwargs)
+    _run(types.SimpleNamespace(input_mesh=npz_path, output_json=output_json, **defaults))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Baseline Yin 3D Skeletonization Pipeline")
+    parser.add_argument("input_mesh", help="Input NPZ or STL")
+    parser.add_argument("output_json", help="Output JSON")
+    parser.add_argument("--pitch", type=float, default=1.0)
+    parser.add_argument("--max_iters", type=int, default=50)
+    parser.add_argument("--collapse_thresh", type=float, default=2.0)
+    parser.add_argument("--prune_len", type=float, default=5.0)
+    parser.add_argument("--rdp_epsilon", type=float, default=0.0)
+    parser.add_argument("--radius_mode", type=str, default="edt", choices=["edt", "uniform"])
+    parser.add_argument("--visualize", action="store_true")
+    parser.add_argument("--vol_thresh", type=float, default=0.3)
+    parser.add_argument("--hybrid", action="store_true")
+    parser.add_argument("--detect_plates", type=str, default="auto", choices=["auto", "off", "force"])
+    parser.add_argument("--plate_thickness_ratio", type=float, default=0.15)
+    parser.add_argument("--min_plate_size", type=int, default=4)
+    parser.add_argument("--flatness_ratio", type=float, default=3.0)
+    parser.add_argument("--junction_thresh", type=int, default=4)
+    parser.add_argument("--min_avg_neighbors", type=float, default=3.0)
+    parser.add_argument("--load_fx", type=float, default=None)
+    parser.add_argument("--load_fy", type=float, default=None)
+    parser.add_argument("--load_fz", type=float, default=None)
+    parser.add_argument("--plate_mode", type=str, default="bspline", choices=["bspline", "voxel", "mesh"])
+    parser.add_argument("--curved", action="store_true")
+    _run(parser.parse_args())
+
 
 if __name__ == "__main__":
     main()

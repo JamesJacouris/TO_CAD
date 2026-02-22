@@ -42,6 +42,7 @@ from src.optimization.layout_opt import optimize_layout
 from src.optimization.size_opt import optimize_size
 from src.optimization.fem import solve_frame
 from src.problems.tagged_problem import TaggedProblem
+from src.pipelines.baseline_yin.reconstruct import reconstruct_npz
 
 # Optional: curves for Bézier re-fitting after optimization
 try:
@@ -56,7 +57,7 @@ def _compute_compliance(json_data, problem_config, E=1000.0):
     nodes = np.array(json_data['graph']['nodes'])
     edges_raw = json_data['graph']['edges']
     edges = np.array([[e[0], e[1]] for e in edges_raw], dtype=int)
-    radii = np.array([e[4] if len(e) >= 5 else e[2] for e in edges_raw])
+    radii = np.array([e[2] for e in edges_raw])
 
     loads, bcs = problem_config.apply(nodes)
     _, compliance, _ = solve_frame(nodes, edges, radii, E=E, loads=loads, bcs=bcs)
@@ -307,38 +308,32 @@ def main():
     # ========================================
     stage1_out = os.path.join(args.output_dir, f"{base_name}_1_reconstructed.json")
 
-    cmd = [
-        sys.executable, os.path.join(SCRIPT_DIR, "src/pipelines/baseline_yin/reconstruct.py"),
-        npz_path, stage1_out,
-        "--pitch", str(args.pitch), "--max_iters", str(args.max_iters),
-        "--collapse_thresh", str(args.collapse_thresh),
-        "--prune_len", str(args.prune_len),
-        "--rdp_epsilon", str(args.rdp),
-        "--radius_mode", args.radius_mode,
-        "--vol_thresh", str(args.vol_thresh),
-    ]
-    if args.load_fx is not None: cmd += ["--load_fx", str(args.load_fx)]
-    if args.load_fy is not None: cmd += ["--load_fy", str(args.load_fy)]
-    if args.load_fz is not None: cmd += ["--load_fz", str(args.load_fz)]
-    
-    # Hybrid-specific args
-    if args.hybrid:
-        cmd.append("--hybrid")
-        cmd += [
-            "--plate_thickness_ratio", str(args.plate_thickness_ratio),
-            "--min_plate_size", str(args.min_plate_size),
-            "--flatness_ratio", str(args.flatness_ratio),
-            "--junction_thresh", str(args.junction_thresh),
-            "--min_avg_neighbors", str(args.min_avg_neighbors),
-            "--plate_mode", args.plate_mode,
-            "--detect_plates", args.detect_plates,
-        ]
-    if args.curved:
-        cmd.append("--curved")
-    if args.visualize:
-        cmd.append("--visualize")
-
-    if not run_stage(cmd, "STAGE 1: Skeleton Reconstruction"):
+    print(f"\n{'='*60}")
+    print("  STAGE 1: Skeleton Reconstruction")
+    print(f"{'='*60}")
+    try:
+        reconstruct_npz(
+            npz_path, stage1_out,
+            pitch=args.pitch, max_iters=args.max_iters,
+            collapse_thresh=args.collapse_thresh, prune_len=args.prune_len,
+            rdp_epsilon=args.rdp, radius_mode=args.radius_mode,
+            vol_thresh=args.vol_thresh,
+            load_fx=args.load_fx, load_fy=args.load_fy, load_fz=args.load_fz,
+            hybrid=args.hybrid,
+            plate_thickness_ratio=args.plate_thickness_ratio,
+            min_plate_size=args.min_plate_size,
+            flatness_ratio=args.flatness_ratio,
+            junction_thresh=args.junction_thresh,
+            min_avg_neighbors=args.min_avg_neighbors,
+            plate_mode=args.plate_mode,
+            detect_plates=args.detect_plates,
+            curved=args.curved,
+            visualize=args.visualize,
+        )
+    except Exception as e:
+        print(f"[FATAL] STAGE 1: Skeleton Reconstruction failed: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
     # ========================================
@@ -436,7 +431,7 @@ def main():
             nodes_size = np.array(size_input['graph']['nodes'])
             edges_raw = size_input['graph']['edges']
             edges_size = np.array([[e[0], e[1]] for e in edges_raw], dtype=int)
-            radii_size = np.array([e[4] if len(e) >= 5 else e[2] for e in edges_raw])
+            radii_size = np.array([e[2] for e in edges_raw])
 
             size_problem = TaggedProblem(load_vector=load_vec)
             size_problem.load_tags_from_json(current_json)
@@ -551,7 +546,7 @@ def main():
                 "metadata": layout_input.get("metadata", {}),
                 "graph": {
                     "nodes": nodes_opt.tolist(),
-                    "edges": [[int(u), int(v), 1.0, [], float(r)] for u, v, r in zip(edges_opt[:, 0], edges_opt[:, 1], radii_opt)],
+                    "edges": [[int(u), int(v), float(r)] for u, v, r in zip(edges_opt[:, 0], edges_opt[:, 1], radii_opt)],
                     "node_tags": {str(k): v for k, v in tags_opt.items()}
                 },
                 "curves": curves_layout,

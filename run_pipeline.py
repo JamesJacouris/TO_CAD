@@ -233,7 +233,7 @@ def main():
     g_opt.add_argument("--prune_opt_thresh", type=float, default=0.0, help="Percentage (0.0-1.0) of max radius to prune dead-weight edges post-optimization")
     g_opt.add_argument("--snap", type=float, default=5.0, help="Snap distance for node merging (mm)")
     g_opt.add_argument("--problem", type=str, default="tagged",
-                       help="Problem config: 'tagged' (auto from BC tags), 'cantilever', 'rocker_arm'")
+                       help="Problem config: 'tagged' (auto from BC tags), 'cantilever', 'roof_slab', 'bridge', 'deck', 'rocker_arm'")
 
     # === Output & Visualisation ===
     g_out = parser.add_argument_group("Output & Visualisation")

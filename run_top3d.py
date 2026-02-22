@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--top3d_iters", "--max_loop", type=int, default=50, help="Max Iterations")
     parser.add_argument("--output", default="python_top3d_result.npz", help="Output .npz file")
     # Problem Type
-    parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "bridge", "deck"], help="Problem type")
+    parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "roof_slab", "bridge", "deck"], help="Problem type")
     parser.add_argument("--load_dist", type=str, default="point", choices=["point", "surface_top", "surface_bottom"], help="Load distribution")
     # Quality improvements
     parser.add_argument("--no-heaviside", dest="use_projection", action="store_false",
@@ -59,17 +59,45 @@ def main():
         for (cx, cy, cz) in corners:
             dist = (il_flat - cx)**2 + (jl_flat - cy)**2 + (kl_flat - cz)**2
             fixed_node_indices.append(np.argmin(dist))
-        
+
         fixed_dofs_list = []
         for n in fixed_node_indices:
             fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
         solver.set_fixed_dofs(np.array(fixed_dofs_list))
         print(f"Fixed {len(fixed_node_indices)} Corner Nodes at Z=0 (2x2 Support Pillars).")
-        
+
         # Default Load for Roof: Distributed across top surface
         if args.load_x is None and args.load_dist == "point":
             args.load_dist = "surface_top"
-            
+
+    elif args.problem == "roof_slab":
+        # Thin slab (roof) with interior point supports — classic hybrid plate+beam case.
+        # Fixed BC: Interior point supports in a grid pattern on bottom surface (z=0)
+        nx, ny = args.nelx, args.nely
+
+        # 3x3 grid of interior supports (excludes boundaries)
+        support_positions = []
+        for i in np.linspace(0.25, 0.75, 3):
+            for j in np.linspace(0.25, 0.75, 3):
+                support_positions.append((int(i * nx), int(j * ny), 0))
+
+        fixed_node_indices = []
+        for (cx, cy, cz) in support_positions:
+            dist = (il_flat - cx)**2 + (jl_flat - cy)**2 + (kl_flat - cz)**2
+            fixed_node_indices.append(np.argmin(dist))
+
+        fixed_dofs_list = []
+        for n in fixed_node_indices:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"Fixed {len(fixed_node_indices)} Interior Nodes at Z=0 (3x3 Support Grid).")
+
+        # Default Load for Roof Slab: Distributed across top surface (downward)
+        if args.load_x is None and args.load_dist == "point":
+            args.load_dist = "surface_top"
+            if args.load_fy == -1.0:  # If using default load
+                args.load_fy = -100.0  # Heavier load for slab
+
     elif args.problem == "bridge" or args.problem == "deck":
         # 2. Fixed BC: Entire Bottom Surface (z=0)
         fixed_node_indices = np.where(kl_flat == 0)[0]

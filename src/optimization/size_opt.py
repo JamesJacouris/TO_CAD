@@ -1,3 +1,13 @@
+"""Optimality-Criteria beam cross-section (radius) optimisation.
+
+Iteratively resizes beam radii to minimise structural compliance subject to a
+total volume constraint, using the classic OC update rule with bisection for
+the Lagrange multiplier and ±20% move limits.
+
+Main entry point
+----------------
+:func:`optimize_size`
+"""
 import numpy as np
 import json
 import argparse
@@ -76,9 +86,37 @@ def optimality_criteria_update(radii, sensitivities, lengths, vol_frac, target_v
         
     return r_new
 
-def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1.0, max_iter=50, visualize=False, target_volume_abs=None):
-    """
-    Main Size Optimization Loop.
+def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1.0,
+                  max_iter=50, visualize=False, target_volume_abs=None):
+    """Optimise beam cross-section radii to minimise compliance at fixed volume.
+
+    Applies the Optimality Criteria (OC) update rule::
+
+        r_new = clip(r_old * (−∂C/∂r / (λ ∂V/∂r))^η,
+                     r_min, r_max)
+
+    where ``λ`` is the Lagrange multiplier found by bisection to satisfy
+    the volume constraint ``Σ π r² L = target_volume_abs``.
+
+    Args:
+        nodes (numpy.ndarray): Node positions, shape ``(N, 3)``, mm.
+        edges (numpy.ndarray): Element connectivity, shape ``(M, 2)``.
+        initial_radii (numpy.ndarray): Starting radii, shape ``(M,)``, mm.
+        problem: Problem configuration object exposing ``apply(nodes)``
+            which returns ``(loads, bcs)`` dicts.
+        E (float): Young's modulus.
+        vol_fraction (float): Not used directly; kept for API compatibility.
+        max_iter (int): Maximum OC iterations.
+        visualize (bool): If ``True``, open an Open3D window showing the
+            final radius distribution.
+        target_volume_abs (float or None): Target total frame volume
+            ``Σ π r² L`` in mm³.  If ``None``, derived from initial radii.
+
+    Returns:
+        tuple:
+            - **radii** (``numpy.ndarray``, shape ``(M,)``): Optimised radii.
+            - **c_initial** (``float``): Compliance before optimisation.
+            - **c_final** (``float``): Compliance after optimisation.
     """
     radii = initial_radii.copy()
     
@@ -152,6 +190,8 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
         
     if 'vol_meas' not in locals():
         vol_meas = vol_init
+    if 'change' not in locals():
+        change = 0.0
             
             
     if visualize:

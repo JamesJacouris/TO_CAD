@@ -43,6 +43,26 @@ def validate_radius(r, default=0.5):
     except:
         return default
 
+def get_color_from_radius(r, r_min, r_max):
+    """
+    Map radius to a colormap (Blue -> Green -> Yellow -> Red) for structural heatmap.
+    """
+    if r_max <= r_min:
+        return (0.8, 0.0, 0.0)
+    
+    t = (float(r) - r_min) / (r_max - r_min)
+    t = max(0.0, min(1.0, t))
+    
+    if t < 0.333:
+        local_t = t / 0.333
+        return (0.0, local_t, 1.0)
+    elif t < 0.666:
+        local_t = (t - 0.333) / 0.333
+        return (local_t, 1.0, 1.0 - local_t)
+    else:
+        local_t = (t - 0.666) / 0.334
+        return (1.0, 1.0 - local_t, 0.0)
+
 
 def _sanitize_ctrl_pts_freecad(p0, p1, p2, p3, max_bulge_ratio=0.2):
     """
@@ -1064,9 +1084,22 @@ def import_hybrid_json(json_path=None):
     if curves:
         total_curves = len(curves)
         curved_count = sum(1 for c in curves if 'ctrl_pts' in c)
+        
+        # Calculate global radius bounds for heatmap coloring
+        r_list = []
+        for c in curves:
+            rad = c.get("radius")
+            if rad is not None:
+                r_list.append(validate_radius(rad))
+        if r_list:
+            global_r_min, global_r_max = min(r_list), max(r_list)
+        else:
+            global_r_min, global_r_max = 0.5, 0.5
+            
         FreeCAD.Console.PrintMessage(
             f"Reconstructing {total_curves} beams "
             f"({curved_count} curved Bézier, {total_curves - curved_count} straight)...\n"
+            f"Radii Range for Heatmap: [{global_r_min:.3f}, {global_r_max:.3f}] mm\n"
         )
 
         for i, curve in enumerate(curves):
@@ -1138,9 +1171,18 @@ def import_hybrid_json(json_path=None):
                     obj_name = f"Beam_{i}_P_{j}"
                     obj = doc.addObject("Part::Feature", obj_name)
                     obj.Shape = shape
-                    obj.ViewObject.ShapeColor = (0.8, 0.0, 0.0)
+                    
+                    if getattr(obj, "ViewObject", None) is not None:
+                        beam_r = validate_radius(radius_json) if radius_json else (global_r_max if 'global_r_max' in locals() else 1.0)
+                        if 'global_r_min' in locals() and 'global_r_max' in locals():
+                            obj.ViewObject.ShapeColor = get_color_from_radius(beam_r, global_r_min, global_r_max)
+                        else:
+                            obj.ViewObject.ShapeColor = (0.8, 0.0, 0.0)
+                        try:
+                            obj.ViewObject.ShapeMaterial = {"SpecularColor": (0.8, 0.8, 0.8), "Shininess": 80.0, "AmbientColor": (0.2, 0.2, 0.2)}
+                        except: pass
+                        
                     geo_grp.addObject(obj)
-                    # Register for plate fusion matching
                     beam_shape_registry.append((shape.copy(), start_pos, end_pos, obj_name))
             except Exception as e:
                 FreeCAD.Console.PrintWarning(f"  Beam geometry {i} failed: {str(e)[:40]}\n")
@@ -1325,8 +1367,14 @@ def import_hybrid_json(json_path=None):
         try:
             obj = doc.addObject("Part::Feature", f"Plate_{plate_id}")
             obj.Shape = plate_solid
-            obj.ViewObject.ShapeColor = (0.0, 0.6, 0.9)
-            obj.ViewObject.Transparency = 20
+            
+            if getattr(obj, "ViewObject", None) is not None:
+                obj.ViewObject.ShapeColor = (0.8, 0.8, 0.95)
+                obj.ViewObject.Transparency = 30
+                try:
+                    obj.ViewObject.ShapeMaterial = {"SpecularColor": (1.0, 1.0, 1.0), "Shininess": 100.0, "AmbientColor": (0.3, 0.3, 0.4)}
+                except: pass
+                
             plate_grp.addObject(obj)
             FreeCAD.Console.PrintMessage(f"    ✓ Plate {plate_id} added to document\n")
         except Exception as e:
@@ -1341,9 +1389,18 @@ def import_hybrid_json(json_path=None):
         FreeCAD.Console.PrintError(f"Recompute failed: {e}\n")
 
     try:
-        FreeCAD.Gui.SendMsgToActiveView("ViewFit")
-    except:
-        pass
+        if FreeCAD.GuiUp:
+            view = FreeCAD.Gui.ActiveDocument.ActiveView
+            view.fitAll()
+            view.setDrawStyle("Shaded")
+            if hasattr(view, "setAxisCross"):
+                view.setAxisCross(False)
+            try:
+                view.setBackgroundColor(
+                    FreeCAD.Gui.getMainWindow().palette().color(QtGui.QPalette.Window)
+                )
+            except: pass
+    except: pass
 
     FreeCAD.Console.PrintMessage("✓✓✓ Reconstruction Complete ✓✓✓\n")
 

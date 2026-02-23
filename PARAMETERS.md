@@ -20,7 +20,7 @@ python run_pipeline.py \
 # Roof slab with interior columns (hybrid beam+plate)
 python run_pipeline.py \
   --problem roof_slab \
-  --nelx 60 --nely 60 --nelz 6 \
+  --nelx 60 --nely 60 --nelz 40 \
   --volfrac 0.12 --penal 3.0 --rmin 2.0 --max_loop 80 \
   --load_fy -150.0 \
   --hybrid --opt_loops 2 \

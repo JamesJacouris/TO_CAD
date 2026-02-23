@@ -272,3 +272,28 @@ python run_pipeline.py \
   --output_dir output/hybrid_v2 \
   --visualize \
   --output Roof_Structure_Test.json
+
+
+
+
+
+###roof_slab test case for hybrid beam-plate testing. Here are the recommended commands:
+
+Quick Top3D-only test (20 iterations):
+
+Medium-sized (better geometry):
+
+
+python run_pipeline.py \
+  --problem roof_slab \
+  --nelx 60 --nely 60 --nelz 6 \
+  --volfrac 0.12 --penal 3.0 --rmin 2.0 \
+  --top3d_iters 80 \
+  --load_fy -150.0 \
+  --hybrid --opt_loops 2 \
+  --output roof_slab_60x60.json \
+  --visualize
+The roof_slab structure should naturally decompose into:
+
+Plate zone: the thin roof slab (high plate score from planarity + uniform EDT)
+Beam zones: the 9 support columns (high beam score from linearity + BC load/support density)

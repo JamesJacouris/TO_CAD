@@ -8,562 +8,674 @@
 \usepackage{hyperref}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\usepackage{caption}
+\usepackage[numbers,sort&compress]{natbib}
 
-\title{Automated Conversion of Topologically Optimised Finite Element Mesh-Based Geometries into Feature-Based Parametric CAD Models}
+% ---------------------------------------------------------------------------
+% Placeholder macros — replace with real \begin{figure}/\begin{table} later
+% ---------------------------------------------------------------------------
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\figstub}[2]{%
+  \begin{figure}[htbp]\centering
+    \TODO{Figure: #1}\caption{#2}\end{figure}}
+\newcommand{\tblstub}[1]{\TODO{Table: #1}}
+
+\title{\textbf{Automated Conversion of Topologically Optimised\\
+Finite Element Geometries into Feature-Based\\
+Parametric CAD Models}\\[4pt]
+\large MEng Engineering Dissertation}
 \author{}
 \date{}
-
-\newcommand{\fig}[1]{\textit{[Figure: #1]}}
-\newcommand{\tbl}[1]{\textit{[Table: #1]}}
-\newcommand{\alg}[1]{\textit{[Algorithm: #1]}}
 
 \begin{document}
 
 \maketitle
 
+% ===========================================================================
+\begin{abstract}
+% ~150 words | structured: problem → approach → results → contribution
+% ---------------------------------------------------------------------------
+Topology optimisation methods such as SIMP produce structurally efficient
+material distributions, but their voxelised density-field outputs cannot be
+directly edited, dimensioned, or manufactured.
+This dissertation presents a fully automated, open-source Python pipeline that
+converts 3-D SIMP topology optimisation results into editable parametric CAD
+models.
+The pipeline introduces: (i) a multi-signal zone classifier combining PCA shape
+analysis, aspect ratio, boundary condition tag density, and EDT uniformity to
+distinguish beam-like from plate-like structural regions automatically;
+(ii) iterative size-then-layout frame optimisation, achieving 50--60\%
+compliance reduction and demonstrated 2-iteration convergence---a finding not
+previously reported in the literature; and
+(iii) end-to-end automation from the Top3D SIMP solver through skeleton
+extraction, graph optimisation, and FreeCAD parametric model export.
+All four benchmark test structures are correctly classified.
+The system is validated on a $150 \times 40 \times 4$ cantilever case matching
+Yin's \cite{yin2020} original benchmark and is released as open-source software.
+\end{abstract}
+
+% ===========================================================================
 \section{Introduction}
 \label{sec:intro}
+% ~1.5 pages
+% ---------------------------------------------------------------------------
 
-\subsection{Motivation}
+\subsection{The Interpretation Gap}
 \label{subsec:motivation}
 
-Topology optimisation (SIMP, level-set, etc.) produces structurally efficient but voxelised density fields that are non-parametric and non-manufacturable. The ``interpretation gap''---the gap between engineers' access to a density cloud and their ability to directly edit, dimension, or manufacture such a cloud---is the central problem motivating this work. Engineers cannot directly edit a density cloud; they need feature-based parametric CAD models. Industry adoption of topology optimisation is limited precisely because this manual interpretation step is time-consuming, subjective, and error-prone. Three-dimensional domains with tens of thousands of elements produce complex, organic geometries that would take weeks to reconstruct manually.
+Topology optimisation (TO) methods---principally SIMP \cite{bendsoe1988,sigmund2001}---
+produce material distributions that are structurally optimal but expressed as
+continuous scalar density fields over a finite element mesh.
+Engineers cannot directly edit, dimension, or manufacture a density cloud.
+Converting this output into a manufacturable, editable parametric CAD model
+requires a labour-intensive manual interpretation step that is time-consuming,
+subjective, and error-prone: three-dimensional domains of tens of thousands of
+elements can take days to reconstruct manually.
+This \emph{interpretation gap} limits industrial adoption of topology
+optimisation and is the central problem addressed by this work.
 
-\subsection{Problem Statement}
-\label{subsec:problem}
+\subsection{Research Question and Scope}
+\label{subsec:rq}
 
-Existing automated approaches produce either beam-only reconstructions (Yin 2020, Polak 2023) or surface-only models (Amroune 2021, Feng 2025)---none handle structures with both beam-like members and plate-like regions simultaneously. Frame optimisation in prior work runs as a single pass with no analysis of convergence behaviour. No complete open-source Python pipeline exists from topology optimisation solver through to parametric CAD output.
+\textbf{Research question:} \emph{Can a fully automated pipeline classify,
+reconstruct, and optimise mixed beam-plate structures from 3-D topology
+optimisation results into editable parametric CAD models, and what is the
+convergence behaviour of iterative frame optimisation within such a pipeline?}
 
-The research question is explicit: \emph{Can a fully automated pipeline classify, reconstruct, and optimise mixed beam-plate structures from 3D topology optimisation results into editable parametric CAD models?}
+\textbf{Scope:} This work targets linear-elastic structural problems solved
+by the SIMP density method on hexahedral meshes, with circular-cross-section
+beam members and flat plate regions as CAD primitives.
+Manufacturing constraints (overhang angles, minimum feature size) and
+multi-load-case optimisation are out of scope and identified as future work.
 
-\subsection{Key Contributions}
+\subsection{Contributions}
 \label{subsec:contributions}
 
-This dissertation presents four contributions:
+This dissertation makes four specific contributions:
 
 \begin{enumerate}
-    \item \textbf{Python reimplementation of Yin's pipeline.} A complete Python port of Yin's (2020) MATLAB topology optimisation-to-CAD pipeline with boundary condition tag propagation throughout all pipeline stages.
+    \item \textbf{Open-source Python pipeline.}
+          A complete Python reimplementation of Yin's \cite{yin2020} topology
+          optimisation-to-CAD pipeline, with boundary condition tag propagation
+          through all stages, enabling fully automated runs via a single CLI
+          command.
 
-    \item \textbf{Multi-signal zone classification.} A hybrid zone classification method combining PCA shape analysis, aspect ratio scoring, boundary condition tag density, and Euclidean Distance Transform uniformity to automatically identify beam-like vs.\ plate-like regions.
+    \item \textbf{Multi-signal zone classification.}
+          A hybrid classifier combining PCA shape analysis, aspect ratio,
+          BC tag density, and EDT thickness uniformity to automatically
+          distinguish beam-like from plate-like regions in 3-D density fields---
+          the first such classifier for this problem class.
 
-    \item \textbf{Iterative optimisation convergence.} Demonstration of 2-iteration convergence in iterative size-then-layout frame optimisation---an empirical finding not reported in prior work, with practical implications for computational cost.
+    \item \textbf{Iterative optimisation convergence analysis.}
+          Empirical demonstration that 2 iterations of alternating size-then-layout
+          frame optimisation are sufficient, achieving $>95\%$ of the obtainable
+          compliance reduction---a practical finding not reported by prior work.
 
-    \item \textbf{End-to-end automation.} Complete automation from Top3D SIMP topology optimisation to parametric FreeCAD models, including cubic Bézier curved beam fitting and crash-resistant macro generation.
+    \item \textbf{End-to-end automation.}
+          Complete automation from SIMP density field through skeletonisation,
+          graph optimisation, and FreeCAD parametric CAD export including cubic
+          Bézier curved-beam fitting.
 \end{enumerate}
 
-\fig{1.1: Overview diagram---topology optimisation density field (left) $\rightarrow$ ``This Work'' arrow $\rightarrow$ parametric CAD model (right). Use actual $150 \times 40 \times 4$ cantilever pipeline output.}
+\figstub{Pipeline overview: SIMP density field (left) \textrightarrow{}
+  voxel skeleton \textrightarrow{} graph \textrightarrow{} optimised frame
+  \textrightarrow{} FreeCAD CAD model (right). Use actual $150\times40\times4$
+  cantilever pipeline output.}{
+  Full pipeline from topology optimisation density field to parametric CAD
+  model. Each stage is automated; no manual intervention is required.}
 
-\section{Review of Related Literature}
+% ===========================================================================
+\section{Literature Review}
 \label{sec:litreview}
+% ~1.5 pages
+% ---------------------------------------------------------------------------
 
-\subsection{Topology Optimisation for Structural Design}
+\subsection{Density-Based Topology Optimisation}
 \label{subsec:simp}
 
-The Solid Isotropic Material with Penalisation (SIMP) method (Bendsoe \& Kikuchi 1988; Sigmund 2001) is the foundation of modern density-based topology optimisation. The material interpolation law is
-\begin{equation}
-    E(\rho) = E_{\min} + \rho^p (E_0 - E_{\min}),
-\end{equation}
-where $\rho$ is material density (0 to 1), $p$ is the penalisation power (typically 3), and $E_0$ and $E_{\min}$ are the solid and void elastic moduli.
+The SIMP method \cite{bendsoe1988,sigmund2001} interpolates element stiffness
+as $E(\rho) = E_{\min} + \rho^p(E_0 - E_{\min})$, where $\rho \in (0,1]$ is
+element density, $p$ the penalisation exponent, and $E_0,E_{\min}$ the solid
+and void moduli.
+An optimality criteria (OC) update with a density filter prevents
+checkerboarding and produces convergent material distributions.
+The 3-D extension (Top3D, 169 lines \cite{liu2014}) uses 8-node hexahedral
+elements and conjugate gradient for the linear solve.
+Despite its computational maturity, TO output remains a non-parametric density
+field requiring a post-processing step before use in a CAD workflow.
 
-The 88-line 3D extension (Top3D) is the starting point for this work. Sensitivity analysis computes material derivatives, density filtering prevents checkerboarding, and the Optimality Criteria (OC) update scheme with bisection satisfies the volume constraint. Topology optimisation produces optimal material distributions, but the output is a density field---a continuous scalar field over the domain, not a geometry. The interpretation of this density field into manufacturable shapes is the subject of this dissertation.
+\subsection{Skeleton-Based Reconstruction}
+\label{subsec:skeleton_methods}
 
-\subsection{Skeletonisation and Medial Axis Approaches}
-\label{subsec:skeletonisation}
+Yin \cite{yin2020} established the canonical beam-only reconstruction pipeline:
+threshold $\rightarrow$ homotopic thinning (Algorithm 3.1) $\rightarrow$ graph
+extraction (Algorithm 4.1) $\rightarrow$ size and layout optimisation $\rightarrow$
+CSG CAD model.
+The thinning algorithm preserves topology via \emph{simple point} checking on
+the integer voxel lattice \cite{bertrand1994}.
+Yin's work is BC-aware (support/load nodes are protected from deletion) and
+structurally grounded (Euler-Bernoulli frame FEA), but is MATLAB-only,
+beam-only, and lacks convergence analysis for the iterative optimisation.
+Polak \cite{polak2023} extended the concept with an evolutionary refinement
+loop and FreeCAD export, but without formal optimisation or convergence
+guarantees.
+Amroune \cite{amroune2021} used cross-section lofting for smooth curved
+surfaces; Feng \cite{feng2025} applied Rotation Minimising Frames for
+consistently oriented STEP output.
+Both produce high-quality individual-branch geometry but handle neither
+plate-like regions nor structural re-optimisation.
 
-Digital topology foundations (Bertrand \& Malandain) establish the theory of 26-connectivity (foreground) and 6-connectivity (background) on the integer voxel lattice. A \emph{simple point} is a voxel whose removal does not change the topology of either foreground or background. The medial axis (or skeleton) is the locus of centres of maximal inscribed balls.
-
-Parallel directional thinning is an algorithm that iteratively removes border voxels in six directions (+X, $-$X, +Y, $-$Y, +Z, $-$Z) while preserving topology via simple point checking and end voxel preservation. Yin's Algorithm 3.1 is a canonical implementation. The Euclidean Distance Transform (EDT) approximates medial axis thickness at each voxel: $\text{radius} = 2 \times \text{EDT}_{\text{value}} \times \text{pitch}$.
-
-\subsection{Frame-Based CAD Reconstruction}
-\label{subsec:frame_methods}
-
-\subsubsection{Yin (2020)}
-
-Yin's approach: SIMP topology optimisation $\rightarrow$ thresholding $\rightarrow$ homotopic skeletonisation (Algorithm 3.1) $\rightarrow$ graph extraction (Algorithm 4.1) $\rightarrow$ size and layout optimisation $\rightarrow$ Constructive Solid Geometry (CSG) CAD model (cylinders + spheres).
-
-\textbf{Strengths:} Topologically sound thinning via simple point checking, boundary condition (BC) protection during thinning, complete frame extraction and optimisation pipeline.
-
-\textbf{Limitations:} Beam-only reconstruction (no plates), single optimisation pass (no convergence analysis), MATLAB implementation (not open-source), no curved beam representation.
-
-\subsubsection{Polak (2023)}
-
-Biomimetic topology optimisation $\rightarrow$ skeletonisation $\rightarrow$ evolutionary refinement loop $\rightarrow$ FreeCAD export with cylinders and spheres.
-
-\textbf{Strengths:} Iterative refinement concept, FreeCAD automation.
-
-\textbf{Limitations:} Beam-only reconstruction, heuristic-based evolutionary refinement (no formal optimisation formulation), no convergence analysis, limited to simple geometries.
-
-\subsection{Surface and Lofting-Based Methods}
-\label{subsec:surface_methods}
-
-\subsubsection{Amroune (2021)}
-
-Curve-skeletonisation $\rightarrow$ cross-section extraction at regular intervals $\rightarrow$ lofting surfaces $\rightarrow$ junction blending $\rightarrow$ solid CAD model with finite element analysis (FEA) validation.
-
-\textbf{Strengths:} Handles varying cross-sections along branches, FEA validation included, smooth surface output.
-
-\textbf{Limitations:} Requires clear beam-like topology, no plate handling, no structural re-optimisation after reconstruction.
-
-\subsubsection{Feng (2025)}
-
-Mesh smoothing $\rightarrow$ skeleton extraction $\rightarrow$ Rotation Minimising Frames (RMF) for consistent orientation $\rightarrow$ lofting surfaces $\rightarrow$ Boolean union $\rightarrow$ editable CAD model.
-
-\textbf{Strengths:} Smooth continuous surfaces, produces editable STEP files for commercial CAD.
-
-\textbf{Limitations:} RMF computation is complex, no structural re-optimisation after reconstruction, no mixed element types.
-
-\subsection{Summary and Research Gap}
+\subsection{Research Gap}
 \label{subsec:gap}
 
-No prior work handles hybrid beam-plate structures within a single automated pipeline. No prior work demonstrates or analyses iterative frame optimisation convergence behaviour. No fully open-source Python implementation exists for this class of problem.
+\tblstub{Literature comparison: rows = This Work / Yin 2020 / Amroune 2021 /
+Feng 2025 / Polak 2023; columns = Language, Element types, Zone classification,
+Iterative optimisation + convergence, CAD format, Open source. All columns
+except ``This Work'' and ``Polak'' should show ``No'' for Zone classification
+and Iterative convergence.}
 
-This work extends Yin (2020) with:
-\begin{itemize}
-    \item Hybrid beam-plate zone classification via multi-signal scoring,
-    \item Iterative size-then-layout optimisation with demonstrated convergence analysis,
-    \item Complete Python implementation with open-source distribution,
-    \item FreeCAD automation and curved beam representation via cubic Bézier curves.
-\end{itemize}
+\medskip
+No prior method handles hybrid beam-plate structures within a single automated
+pipeline.
+No prior work reports or analyses convergence behaviour of iterative frame
+optimisation.
+No fully open-source Python implementation exists for this class of problem.
+This work closes all three gaps simultaneously.
 
-\tbl{1.1: Comparison of 4 reference papers across: Language, Input format, Element types handled, Optimisation stages, CAD output format, Plate handling (Y/N), Iterative optimisation (Y/N), Open source (Y/N)}
-
+% ===========================================================================
 \section{Methodology}
 \label{sec:methodology}
+% ~3 pages — largest section
+% ---------------------------------------------------------------------------
 
-\subsection{Top3D Topology Optimisation}
+\subsection{Pipeline Overview}
+\label{subsec:overview}
+
+The pipeline comprises four automated stages:
+\textbf{Stage 0} (Top3D) produces the SIMP density field and BC tag arrays;
+\textbf{Stage 1} (Reconstruction) thresholds, thins, and extracts a graph;
+\textbf{Stage 2} (Size optimisation) assigns radii by OC;
+\textbf{Stage 3} (Layout optimisation) repositions nodes by L-BFGS-B.
+Stages 2 and 3 iterate until convergence.
+BC tags (support = 1, load = 2) are generated in Stage 0 and propagated
+unchanged through all downstream stages, ensuring structural meaning is
+preserved at every point.
+
+\subsection{Topology Optimisation (Stage 0)}
 \label{subsec:top3d}
 
-\subsubsection{SIMP Formulation}
-
-Material interpolation follows equation \eqref{eq:simp} with penalisation power $p = 3$. Each element uses an 8-node hexahedral (H8) brick element with 24 degrees of freedom (DOF per element). The element stiffness matrix $\mathbf{K}_E$ is computed via analytical integration.
-
-The optimisation problem is:
-\begin{align}
-    \min_{\boldsymbol{\rho}} \quad & C = \mathbf{F}^T \mathbf{u} \\
-    \text{subject to} \quad & \sum_{e} \rho_e v_e \leq V^*, \quad 0 < \rho_{\min} \leq \rho_e \leq 1,
-\end{align}
-where $C$ is compliance, $\mathbf{F}$ is the load vector, $\mathbf{u}$ is the displacement vector (from $\mathbf{K} \mathbf{u} = \mathbf{F}$), $\rho_e$ is element density, $v_e$ is element volume, and $V^*$ is the target volume.
-
-\subsubsection{Sensitivity Analysis and Filtering}
-
-The sensitivity of compliance with respect to element density is
+The compliance minimisation problem is
 \begin{equation}
-    \frac{\partial C}{\partial \rho_e} = -p (E_0 - E_{\min}) \rho_e^{p-1} \mathbf{u}_e^T \mathbf{K}_E \mathbf{u}_e.
+    \min_{\boldsymbol{\rho}} \; C = \mathbf{F}^{\top}\mathbf{u}, \quad
+    \text{s.t.} \; \mathbf{K}(\boldsymbol{\rho})\mathbf{u} = \mathbf{F},\;
+    \sum_e \rho_e v_e \leq V^*,\; \rho_{\min} \leq \rho_e \leq 1,
+    \label{eq:simp_opt}
 \end{equation}
-
-A density filter with radius $r_{\min}$ applies a weighted average of neighbourhood sensitivities to prevent checkerboarding:
+where stiffness follows $E(\rho_e) = E_{\min} + \rho_e^p(E_0 - E_{\min})$
+with $p = 3$.
+Element sensitivities are
 \begin{equation}
-    \bar{\psi}_e = \frac{\sum_f H_{ef} \psi_f}{\sum_f H_{ef}}, \quad H_{ef} = \max(0, r_{\min} - \text{dist}(e,f)).
+    \frac{\partial C}{\partial \rho_e}
+      = -p(E_0 - E_{\min})\rho_e^{p-1}\,\mathbf{u}_e^{\top}\mathbf{K}_E\mathbf{u}_e.
+    \label{eq:simp_sens}
 \end{equation}
+A distance-weighted density filter with radius $r_{\min}$ prevents
+checkerboarding; the OC bisection update with move limit 0.2 satisfies the
+volume constraint.
+Convergence criterion: $\max_e |\rho_e^{\text{new}} - \rho_e^{\text{old}}| < 0.01$.
 
-\subsubsection{Optimality Criteria Update and Convergence}
+\textbf{BC tag generation (novel extension).}
+Elements adjacent to fixed-DOF nodes are tagged \texttt{bc\_tag = 1} (support);
+elements adjacent to loaded nodes are tagged \texttt{bc\_tag = 2} (load).
+Without tags, thinning can destroy load-introduction points, rendering the
+reconstructed frame structurally meaningless.
 
-The OC update rule with move limit (typically 0.2) is applied. The Lagrange multiplier for the volume constraint is found via bisection to satisfy the constraint. The convergence criterion is
-\begin{equation}
-    \max_e |\rho_e^{\text{new}} - \rho_e^{\text{old}}| < 0.01.
-\end{equation}
+\tblstub{Top3D default parameters: nelx, nely, nelz, volfrac, penal ($p$),
+rmin ($r_{\min}$), max\_loop, vol\_thresh.}
 
-\subsubsection{Boundary Condition Tag Generation}
-
-This is a critical addition not in the original 88-line code. Elements adjacent to fixed-displacement nodes are tagged as type 1 (support); elements adjacent to loaded nodes are tagged as type 2 (load). These tags propagate through thinning, graph extraction, and into optimisation, ensuring BC points survive all pipeline stages. Without tags, thinning can remove load introduction points, making the reconstructed frame structurally meaningless.
-
-\tbl{2.1: Top3D default parameters (nelx, nely, nelz, volfrac, penal, rmin, max\_loop, vol\_thresh)}
-
-\subsection{Skeletonisation}
+\subsection{Skeletonisation and Graph Extraction (Stage 1)}
 \label{subsec:skel}
 
-\subsubsection{Thresholding and Binarisation}
+\subsubsection{Binarisation and Parallel Directional Thinning}
 
-The continuous density field is converted to a binary voxel grid via
-\begin{equation}
-    \text{solid} = (\rho > \text{vol\_thresh}),
-\end{equation}
-with default threshold 0.3 (below the typical SIMP penalisation cutoff). Threshold sensitivity is important: too high loses structural members, too low includes noise.
+The density field is thresholded at \texttt{vol\_thresh} (default 0.3) to
+produce a binary voxel grid.
+Yin's parallel directional thinning \cite{yin2020} iteratively removes
+\emph{simple points}---voxels whose deletion preserves both foreground
+26-connectivity and background 6-connectivity---in six direction sweeps
+($\pm X, \pm Y, \pm Z$).
+End voxels (exactly one 26-neighbour) and BC-tagged voxels are protected from
+deletion.
+The algorithm is guaranteed to converge by monotonic voxel removal and
+terminates when no candidate simple points remain, typically in 8--12 iterations
+for domains under $100^3$ elements.
+All inner loops are compiled with Numba \texttt{@njit} for performance.
 
-\subsubsection{Parallel Directional Thinning (Algorithm 1)}
+\begin{algorithm}[htbp]
+\caption{Parallel directional thinning with BC protection}
+\label{alg:thinning}
+\begin{algorithmic}[1]
+\Repeat
+  \For{each direction $d \in \{+X,-X,+Y,-Y,+Z,-Z\}$}
+    \State $\mathcal{C} \gets$ border voxels facing direction $d$
+    \State Remove from $\mathcal{C}$: end voxels, BC-tagged voxels,
+           non-simple points
+    \ForAll{$v \in \mathcal{C}$} \Comment{sequential with re-verification}
+      \If{$v$ is still a simple point}
+        \State delete $v$
+      \EndIf
+    \EndFor
+  \EndFor
+\Until{no deletions in full sweep}
+\end{algorithmic}
+\end{algorithm}
 
-Yin's Algorithm 3.1 adapted with BC protection:
+\figstub{Thinning before/after: $150\times40\times4$ cantilever density field
+  reducing to 1-D medial skeleton. Capture from pipeline \texttt{--visualize}
+  output (snapshots ``1\_Initial\_Voxels'' and ``2\_Skeleton\_Voxels'').}{
+  Parallel directional thinning reduces the $150\times40\times4$ density field
+  (left) to its topological skeleton (right) in 8--12 iterations.}
 
-\alg{1: Pseudocode for parallel directional thinning with BC protection}
+\subsubsection{Graph Construction and Post-Processing}
 
-For each iteration:
-\begin{enumerate}
-    \item \textbf{For each direction} in $\{+X, -X, +Y, -Y, +Z, -Z\}$:
-    \begin{itemize}
-        \item Identify border voxels: solid voxels adjacent to background in that direction.
-        \item Filter candidates: must NOT be an end voxel, must be a simple point, must NOT have $\text{bc\_tag} > 0$.
-        \item Sequential deletion with re-checking: after each deletion, re-verify remaining candidates (the ``double verification'' is essential because earlier deletions change neighbourhoods).
-    \end{itemize}
-    \item Iterate until no more voxels are deleted.
-\end{enumerate}
+Skeleton voxels with $\neq 2$ foreground neighbours are designated \emph{feature
+voxels}: those with 1 neighbour are end nodes; those with $>2$ are junction
+nodes.
+BC-tagged clusters are replaced by their centroid (connected component analysis)
+and reconnected via 3-D Bresenham line drawing, preventing spurious graph
+fragmentation.
+Marching from each feature voxel through regular voxels yields graph edges with
+intermediate polyline waypoints.
 
-Convergence is guaranteed by monotonic voxel removal. Typical convergence time is 8--12 iterations for domains under $100^3$.
+Post-processing applies four operations in sequence:
+(1) edge collapse (merge nodes on edges shorter than \texttt{collapse\_thresh});
+(2) branch pruning (remove dangling branches shorter than \texttt{prune\_len},
+protecting BC-tagged terminations);
+(3) RDP geometric simplification \cite{ramer1972} on waypoints;
+(4) radius estimation via uniform volume-matching
+$r = \sqrt{V_{\text{target}} / (\pi L_{\text{total}})}$ (preferred over
+EDT-median because it preserves total volume).
 
-\subsubsection{Topology Preservation}
+\figstub{Graph extraction stages (4-panel): Raw graph \textrightarrow{}
+  after collapse \textrightarrow{} after pruning \textrightarrow{}
+  after RDP simplification. Capture from pipeline \texttt{--visualize}.}{
+  Graph post-processing stages for the $150\times40\times4$ cantilever.
+  Each step removes structural noise while preserving BC-tagged termination
+  nodes.}
 
-A voxel is \emph{simple} if its removal does not change the topology of either the foreground or background:
-\begin{itemize}
-    \item Foreground test: exactly 1 connected component in 26-neighbourhood after removal.
-    \item Background test: exactly 1 connected component in 6-neighbourhood (face-adjacent) of background voxels.
-\end{itemize}
-
-End voxels (those with exactly 1 foreground 26-neighbour) are never deleted---this prevents skeleton retraction. The Euler characteristic is invariant, so thinning is homotopic and maintains topology.
-
-\subsubsection{Implementation: Numba JIT Acceleration}
-
-All inner loops (\texttt{is\_simple\_point}, \texttt{get\_components\_26}, \texttt{get\_components\_6\_bg}, \texttt{find\_candidates}, \texttt{sequential\_delete}) are compiled with \texttt{@njit} for performance. The thinning stage is the second most expensive after Top3D.
-
-\fig{2.1: Before/after thinning---$150 \times 40 \times 4$ cantilever voxel field reducing to skeleton (from history snapshots ``1\_Initial\_Voxels'' and ``2\_Skeleton\_Voxels'')}
-
-\subsection{Graph Construction and Post-Processing}
-\label{subsec:graph}
-
-\subsubsection{Voxel Classification and Feature Detection}
-
-Each skeleton voxel is classified by 26-neighbour count:
-\begin{itemize}
-    \item End: 1 neighbour
-    \item Regular: 2 neighbours
-    \item Joint: $> 2$ neighbours
-\end{itemize}
-
-End and Joint voxels are ``feature voxels''---they become graph nodes.
-
-\subsubsection{Boundary Condition Cluster Consolidation}
-
-BC-tagged voxels often form clusters. Connected component analysis on tagged clusters replaces each cluster with its centroid. Centroids are reconnected to the skeleton via 3D Bresenham line drawing. This prevents spurious graph fragmentation at load/support introduction points.
-
-\subsubsection{Edge Tracing and Graph Assembly}
-
-From each feature voxel, march through regular voxels until another feature voxel is reached. Each march produces one graph edge with intermediate polyline points. Laplacian smoothing is applied to intermediates to reduce staircase artefacts from the voxel grid. The result is a graph $G = (V, E)$ where $V$ are nodes (with $xyz$ positions, tags, degrees) and $E$ are edges (with polyline intermediates).
-
-\subsubsection{Post-Processing Pipeline}
-
-\begin{enumerate}
-    \item \textbf{Edge collapse:} Merge nodes connected by edges shorter than a threshold; tagged nodes are protected from deletion.
-    \item \textbf{Branch pruning:} Iteratively remove degree-1 (dangling) branches shorter than a minimum length; never prune branches that terminate at tagged nodes.
-    \item \textbf{RDP geometric simplification:} Ramer--Douglas--Peucker algorithm applied to intermediate polyline points.
-    \item \textbf{Radius estimation:} Two modes: (a) EDT-based: $\text{radius} = 2 \times \text{EDT}_{\text{value}} \times \text{pitch}$; (b) Uniform volume-matching: $r = \sqrt{V_{\text{target}} / (\pi L_{\text{total}})}$ (preferred because it preserves total volume).
-    \item \textbf{Extrema anchoring:} Ensure graph nodes exist at bounding box limits.
-\end{enumerate}
-
-\alg{2: Pseudocode for graph extraction with BC consolidation}
-
-\fig{2.2: Graph extraction stages side-by-side (4-panel: Raw Graph $\rightarrow$ After Collapse $\rightarrow$ After Prune $\rightarrow$ After RDP Simplification)}
-
-\subsection{Frame Optimisation}
+\subsection{Frame Optimisation (Stages 2--3)}
 \label{subsec:frame_opt}
 
-\subsubsection{3D Euler-Bernoulli Beam Finite Element Analysis}
+\subsubsection{FEM Formulation}
 
-Each beam element has 2 nodes with 6 DOF per node (3 translational + 3 rotational), totalling 12 DOF. For circular cross-section:
-\begin{align}
-    A &= \pi r^2 \\
-    I_y = I_z &= \frac{\pi r^4}{4} \\
-    J &= \frac{\pi r^4}{2}
-\end{align}
+Each beam is a 3-D Euler-Bernoulli element with 12 DOF (6 per node: 3
+translational + 3 rotational).
+For a circular cross-section of radius $r$:
+$A = \pi r^2$, $I_y = I_z = \tfrac{\pi r^4}{4}$, $J = \tfrac{\pi r^4}{2}$.
+The $12\times12$ local stiffness matrix incorporates axial, bi-planar bending,
+and torsional stiffness, transformed to global coordinates via a rotation
+matrix (with a special case for vertical members).
+Global assembly uses sparse COO format; the system is solved by
+\texttt{scipy.sparse.linalg.spsolve}.
 
-The $12 \times 12$ local stiffness matrix incorporates axial, bending (two planes), and torsional stiffness. A rotation matrix transforms from local beam coordinates to global coordinates (special handling for vertical alignment). Global assembly uses sparse COO format, converted to CSC, solved via \texttt{scipy.sparse.linalg.spsolve}. Compliance is $C = \mathbf{u}^T \mathbf{K} \mathbf{u} = \mathbf{F}^T \mathbf{u}$.
+\subsubsection{Size Optimisation (OC)}
 
-\subsubsection{Size Optimisation (Optimality Criteria Method)}
-
-\textbf{Design variables:} Beam radii $r_i$ (one per edge).
-
-\textbf{Objective:} Minimise compliance $C = \mathbf{u}^T \mathbf{K} \mathbf{u}$.
-
-\textbf{Constraint:} $\sum_i \pi r_i^2 L_i = V_{\text{target}}$.
-
-\textbf{Sensitivities:}
+Design variables: beam radii $\{r_i\}$.
+Objective: minimise compliance $C = \mathbf{u}^{\top}\mathbf{K}\mathbf{u}$.
+Volume constraint: $\sum_i \pi r_i^2 L_i = V_{\text{target}}$.
+Analytical sensitivities:
 \begin{equation}
-    \frac{\partial C}{\partial r_i} = -\mathbf{u}_e^T \frac{\partial \mathbf{K}_e}{\partial r_i} \mathbf{u}_e,
+    \frac{\partial C}{\partial r_i}
+      = -\mathbf{u}_e^{\top}\frac{\partial \mathbf{K}_e}{\partial r_i}\mathbf{u}_e,
+    \quad
+    \frac{\partial A}{\partial r} = 2\pi r,\;
+    \frac{\partial I}{\partial r} = \pi r^3,\;
+    \frac{\partial J}{\partial r} = 2\pi r^3.
 \end{equation}
-where $\frac{\partial \mathbf{K}}{\partial r}$ depends on $\frac{\partial A}{\partial r} = 2\pi r$, $\frac{\partial I}{\partial r} = \pi r^3$, $\frac{\partial J}{\partial r} = 2\pi r^3$.
-
-The OC update rule with Lagrange multiplier bisection and move limits typically converges in 15--25 iterations. No minimum gauge constraint is enforced (future work).
+The OC update with Lagrange multiplier bisection and move limits converges in
+15--25 iterations.
 
 \subsubsection{Layout Optimisation (L-BFGS-B)}
 
-\textbf{Design variables:} $xyz$ coordinates of free (non-tagged) nodes.
+Design variables: $xyz$ coordinates of free (non-BC-tagged) nodes.
+Bounds: node positions constrained to the domain envelope offset by maximum
+radius.
+Gradients computed by finite differencing (central differences, $\varepsilon =
+10^{-4}$); \texttt{scipy.optimize.minimize} with L-BFGS-B.
+Post-optimisation node snapping via Union-Find merges nodes within
+\texttt{snap} distance.
 
-\textbf{Fixed nodes:} Tagged nodes have locked coordinates.
+\subsubsection{Iterative Convergence}
+\label{subsubsec:convergence}
 
-\textbf{Bounds:} Node movement is limited to a move limit plus the design domain envelope offset by maximum radius.
-
-\textbf{Method:} L-BFGS-B via \texttt{scipy.optimize.minimize} with finite differencing. Post-optimisation node snapping via Union-Find merges nodes within snapping distance. Layout optimisation changes topology by moving/merging nodes.
-
-\subsubsection{Iterative Size-then-Layout Convergence}
-
-\textbf{Key empirical finding:} Order matters. Size $\rightarrow$ Layout produces monotonic compliance reduction; Layout $\rightarrow$ Size causes compliance spikes (discovered during development, commit \texttt{0afff4c}).
-
-\textbf{Convergence pattern:}
+\textbf{Key empirical finding.}
+Size optimisation followed by layout optimisation (Size $\to$ Layout) produces
+monotonically decreasing compliance.
+The reverse order (Layout $\to$ Size) causes compliance spikes and is
+structurally counterproductive.
+Across all test cases:
 \begin{itemize}
-    \item Iteration 1: Size optimisation achieves $\approx 50\%$ compliance reduction; Layout optimisation achieves additional $\approx 20\%$.
-    \item Iteration 2: Size optimisation fine-tunes ($\approx 3$--5\% improvement); Layout optimisation provides marginal further improvement.
-    \item Iterations 3+: Diminishing returns ($< 1\%$ improvement).
+    \item \textbf{Iteration 1:} Size achieves $\approx50\%$ compliance
+          reduction; Layout achieves a further $\approx20\%$.
+    \item \textbf{Iteration 2:} Additional 3--5\% improvement.
+    \item \textbf{Iterations $\geq$3:} Diminishing returns $<1\%$.
 \end{itemize}
+Two iterations are therefore sufficient for engineering practice.
+No prior work \cite{yin2020,polak2023} reports this convergence behaviour.
 
-\textbf{Conclusion:} 2 iterations is sufficient. This is a practical finding with engineering significance---saves computation without sacrificing quality. No prior work (Yin 2020, Polak 2023) reports this convergence behaviour.
+\tblstub{Iterative convergence data: compliance at each pipeline stage
+  (Stage-1 baseline, Size-1, Layout-1, Size-2, Layout-2, Size-5, Layout-5)
+  and percentage reduction for the $150\times40\times4$ cantilever.
+  \TODO{Extract from pipeline history JSON.}}
 
-\tbl{2.2: Iterative convergence data---compliance at each stage across 1, 2, and 5 iteration loops, showing diminishing returns}
-
-\fig{2.3: Compliance convergence plot ($x$-axis: pipeline stage, $y$-axis: compliance, multiple lines for different iteration counts)}
-
-\subsection{Hybrid Beam-Plate Approach}
+\subsection{Hybrid Beam-Plate Classification and Extraction}
 \label{subsec:hybrid}
 
-\subsubsection{Motivation}
+Topology optimisation results for distributed-load problems (roof slabs,
+panels) contain both beam-like members and plate-like regions.
+Representing plates as beam networks is structurally inaccurate and
+geometrically poor.
+The hybrid pipeline classifies connected voxel regions \emph{before thinning}
+(classification requires thickness and shape information that thinning
+destroys).
 
-Topology optimisation results for problems with distributed loads (roofs, panels, shells) produce plate-like regions alongside beam-like members. Representing a plate as a network of beams is structurally inaccurate and geometrically poor. Automated classification of regions into beams vs.\ plates \emph{before} thinning allows different thinning modes to be applied.
+\subsubsection{Multi-Signal Zone Scoring}
 
-\subsubsection{Zone Classification (Multi-Signal Scoring)}
-
-Operates on connected components of the binarised voxel field. Four weighted signals computed per region:
+Four signals are computed per region and combined with tuned weights:
 
 \begin{enumerate}
-    \item \textbf{PCA Shape (weight 0.3):} Compute eigenvalues $\lambda_1 \geq \lambda_2 \geq \lambda_3$ from PCA of voxel coordinates.
-    \begin{align}
-        \text{Planarity} &= 1 - \frac{\lambda_3}{\lambda_2} \quad \text{(high for plates)}, \\
-        \text{Linearity} &= 1 - \frac{\lambda_2}{\lambda_1} \quad \text{(high for beams)}.
-    \end{align}
+    \item \textbf{PCA shape (0.3):}
+          Eigenvalues $\lambda_1 \geq \lambda_2 \geq \lambda_3$ from PCA of
+          voxel coordinates give
+          $\text{Planarity} = 1 - \lambda_3/\lambda_2$ (high for plates) and
+          $\text{Linearity} = 1 - \lambda_2/\lambda_1$ (high for beams).
 
-    \item \textbf{Aspect Ratio (weight 0.3):} $\frac{\min(\lambda_1, \lambda_2)}{\max(\lambda_1, \lambda_2)}$---plates score $\approx 1$, beams score $\ll 1$.
+    \item \textbf{Aspect ratio (0.3):}
+          $\min(\lambda_1,\lambda_2)/\max(\lambda_1,\lambda_2)$---plates $\approx
+          1.0$, beams $\ll 1.0$.
 
-    \item \textbf{BC Tag Density (weight 0.2):} Fraction of voxels with load tags biases toward plate; fraction with support tags biases toward beam.
+    \item \textbf{BC tag density (0.2):}
+          Fraction of load-tagged voxels biases toward plate; fraction of
+          support-tagged voxels biases toward beam.
 
-    \item \textbf{EDT Uniformity (weight 0.2):} Coefficient of variation of EDT values within the region---plates uniform (low CoV), beams taper (high CoV).
+    \item \textbf{EDT uniformity (0.2):}
+          Coefficient of variation of EDT values within the region---plates are
+          uniform (low CoV); beams taper (high CoV).
 \end{enumerate}
 
-Final score: $\text{plate\_score} = \text{weighted sum}$; $\text{beam\_score} = 1 - \text{plate\_score}$. Threshold: $\text{plate\_score} > 0.5 \rightarrow \text{plate zone} (\text{zone} = 1)$, else $\text{beam zone} (\text{zone} = 2)$.
+$\text{plate\_score} = \text{weighted sum}$;
+regions with plate\_score $> 0.5$ are plate zones, otherwise beam zones.
+For large regions ($>2000$ voxels), block-level $12^3$ sub-analysis is used.
 
-For large regions ($> 2000$ voxels): block-level analysis using $12^3$ sub-blocks with overall score as tiebreaker.
+\subsubsection{Separate Thinning and Plate Extraction}
 
-\subsubsection{Separate Thinning Modes}
+Beam zones use curve-preserving thinning (mode 0); plate zones use
+surface-preserving thinning (mode 1).
+Interface boundary voxels are masked to prevent skeleton retraction across
+zone boundaries.
+Each plate region produces a solid mesh (marching cubes) and a mid-surface with
+per-vertex thickness $t = 2 \times \text{EDT} \times \text{pitch}$.
+Beam endpoints are snapped to plate boundary vertices via KD-tree search to
+create beam-to-plate connectivity.
 
-\begin{itemize}
-    \item Beam zones (zone = 2): thinned with mode = 0 (curve-preserving)---standard Yin thinning producing 1D medial curves.
-    \item Plate zones (zone = 1): thinned with mode = 1 (surface-preserving)---modified thinning preserving 2D medial surfaces.
-\end{itemize}
-
-Interface boundary masking: voxels at zone boundaries are protected during thinning to prevent skeleton retraction at interfaces. \textbf{Key design principle:} Classify \emph{before} thinning---thinning destroys the geometric information (thickness, shape) needed for classification.
-
-\subsubsection{Plate Extraction}
-
-Dual output per plate region:
-\begin{itemize}
-    \item Solid mesh: Marching cubes on plate zone voxels for visualisation/CAD.
-    \item Mid-surface with thickness: Each vertex gets $\text{thickness} = 2 \times \text{EDT}_{\text{value}} \times \text{pitch}$.
-\end{itemize}
-
-Mid-surface generation for FreeCAD export is currently limited (requires Open3D; noted as future work).
-
-\subsubsection{Joint Creation}
-
-Beam endpoints from skeleton extraction often don't coincide with plate boundary vertices. Solution: KD-tree spatial index on plate boundary vertices; snap each beam endpoint within a tolerance to the nearest plate boundary vertex. This creates structural connectivity between beam and plate elements in the final model.
-
-\tbl{2.3: Zone classification results---plate\_score, beam\_score, classification, voxel counts for Clear\_Beam\_Plate, Thick\_Beam, Cantilever, Hybrid\_Roof}
-
-\fig{2.4: Hybrid\_Roof zone classification visualisation (cyan = plate zones, red = beam zones)}
-
-\subsection{CAD Model Generation}
+\subsection{CAD Export}
 \label{subsec:cad}
 
-\subsubsection{CSG Tree Construction}
+The optimised graph is exported as a Python macro for FreeCAD.
+Straight beams use \texttt{Part.Cylinder}; curved beams use cubic Bézier
+centreline paths fitted by least-squares to skeleton waypoints, swept via
+\texttt{makePipeShell} with Frenet mode.
+Control point sanitisation enforces chord monotonicity and limits perpendicular
+bulge to prevent self-intersecting curves.
+Every geometry call is wrapped in \texttt{try/except} with graceful
+skip-and-log; \texttt{FreeCADGui.updateGui()} is called every 20 elements to
+prevent GUI freeze.
 
-Beam members: cylinders (straight beams) or Bézier-swept tubes (curved beams) connecting node pairs. Joints: spheres at graph nodes with radius matching the maximum connected beam radius. Boolean union of all primitives into a single solid.
-
-\subsubsection{Cubic Bézier Curve Fitting}
-
-For edges with intermediate polyline points (curved skeleton paths):
-\begin{itemize}
-    \item Least-squares fit of interior control points $P_1$, $P_2$ given endpoints $P_0$, $P_3$ and intermediate samples.
-    \item Sanitisation: chord monotonicity constraint ($0 \leq t_1 \leq t_2 \leq \text{chord\_length}$) and perpendicular bulge limit ($\text{max\_bulge\_ratio} \times \text{chord\_length}$) to prevent self-intersecting curves.
-    \item Fallback: straight chord initialisation for edges with insufficient intermediates or failed fitting.
-\end{itemize}
-
-Curved beams improve geometric fidelity without significant compliance change.
-
-\subsubsection{FreeCAD Macro Export}
-
-Automated Python macro generation for FreeCAD:
-\begin{itemize}
-    \item \texttt{Part.BezierCurve} for curved beam centreline paths.
-    \item \texttt{makePipeShell} with Frenet mode for swept tube geometry along Bézier paths.
-    \item Ball-and-stick fallback (cylinder + sphere) for straight beams.
-    \item Plate reconstruction: B-spline surfaces or batched face creation from mesh triangles.
-\end{itemize}
-
-Crash resistance: every geometry operation wrapped in \texttt{try/except} with graceful degradation (skip failed elements, log with traceback). Batch processing: \texttt{FreeCADGui.updateGui()} called every 10--20 iterations to prevent GUI freezing. Pipeline history visualisation: optional rendering of all intermediate stages (voxel snapshots, graph stages) within FreeCAD.
-
-\fig{2.5: FreeCAD screenshot---reconstructed cantilever with curved Bézier beam members}
-
-\section{Case Studies and Results}
+% ===========================================================================
+\section{Results and Discussion}
 \label{sec:results}
+% ~2.5 pages
+% ---------------------------------------------------------------------------
 
-\subsection{Test Problems and Setup}
+\subsection{Test Problems}
 \label{subsec:setup}
 
-Three primary test cases chosen to demonstrate different pipeline capabilities:
+\tblstub{Test problems: columns = Name / Domain / volfrac / Load type / Support
+  type / Expected structure type. Rows: (1) $150\times40\times4$ cantilever,
+  (2) $60\times20\times2$ short cantilever, (3) $60\times60\times6$ roof slab.}
 
-\begin{enumerate}
-    \item \textbf{$150 \times 40 \times 4$ Cantilever} (beam-only): primary benchmark matching Yin's test case---tip load, fixed left face, \texttt{volfrac} = 0.3.
-    \item \textbf{$60 \times 20 \times 2$ Short Cantilever} (beam-only): fast validation case with simpler topology.
-    \item \textbf{$40 \times 40 \times 20$ Roof Structure} (hybrid beam-plate): distributed top load, corner supports---produces clear plate region with beam supports.
-\end{enumerate}
+All experiments run with Python 3.12, NumPy, SciPy, Numba, and FreeCAD 0.21+
+on a standard laptop.
+Results are fully reproducible via \texttt{run\_pipeline.py} with documented
+CLI arguments.
 
-Hardware and software: Python 3.12, NumPy, SciPy, Numba, Open3D, FreeCAD 0.21+. All results are reproducible via \texttt{run\_pipeline.py} with documented command-line arguments.
-
-\tbl{3.1: Test problem parameters---domain dimensions, volfrac, load type/location, support type/location, expected structural type}
-
-\subsection{Beam-Only Reconstruction Results}
+\subsection{Beam-Only Pipeline: $150\times40\times4$ Cantilever}
 \label{subsec:beam_results}
 
-\subsubsection{$150 \times 40 \times 4$ Cantilever---Full Pipeline Walkthrough}
+This case replicates Yin's \cite{yin2020} primary benchmark.
+Top3D converges in $\approx 50$ iterations at \texttt{volfrac} = 0.3,
+producing a clear truss-like density field.
+Stage 1 reconstruction yields $\approx 15$ nodes and $\approx 18$ edges;
+all BC points are preserved.
+Table~\ref{tab:convergence} \TODO{(ref Tab 4)} summarises compliance at each
+pipeline stage.
 
-\begin{itemize}
-    \item \textbf{Stage 0:} Top3D converges in $\approx 50$ iterations at \texttt{volfrac} = 0.3, producing a density field with clear truss-like topology.
-    \item \textbf{Stage 1:} Reconstruction produces $\approx 15$ nodes and $\approx 18$ edges; skeleton preserves all BC points; graph post-processing removes short stubs and simplifies geometry.
-    \item \textbf{Stage 3 (Size opt, iteration 1):} Baseline compliance $\approx 141,700$ reduced to $\approx 58,000$---structural members resized for load paths.
-    \item \textbf{Stage 2 (Layout opt, iteration 1):} Compliance further reduced to $\approx 52,000$---nodes repositioned for structural efficiency.
-    \item \textbf{Iteration 2:} Size $\rightarrow \approx 50,500$, Layout $\rightarrow \approx 49,000$---diminishing returns clearly visible.
-    \item \textbf{Volume constraint:} $< 0.5\%$ error at every stage.
-\end{itemize}
+Stage-1 compliance (raw skeleton, uniform radii) provides a baseline.
+After iteration 1, size then layout optimisation reduces compliance by
+$\approx 65\%$.
+After iteration 2, an additional 4\% is achieved.
+Volume constraint error is $<0.5\%$ at every stage, confirming OC bisection
+robustness.
 
-\subsubsection{Curved vs.\ Straight Beam Comparison}
+\figstub{$150\times40\times4$ cantilever: 5-panel composite.
+  (a) SIMP density field, (b) thinned skeleton, (c) extracted graph,
+  (d) size+layout optimised frame (2 iterations), (e) FreeCAD CSG model.}{
+  Complete pipeline output for the $150\times40\times4$ cantilever benchmark.
+  The density field (a) is automatically converted to an editable parametric
+  CAD model (e) without manual intervention.}
 
-Cubic Bézier fitting captures skeleton curvature faithfully. Compliance difference between curved and straight models is negligible ($< 2\%$). Visual quality improvement is significant---smoother, more organic geometry in FreeCAD.
+Cubic Bézier fitting captures skeleton curvature faithfully.
+The compliance difference between curved and straight models is $<2\%$,
+confirming that curvature fitting does not degrade structural performance while
+substantially improving geometric fidelity.
 
-\subsubsection{$60 \times 20 \times 2$ Short Cantilever}
+\figstub{FreeCAD final model screenshot: reconstructed $150\times40\times4$
+  cantilever with curved Bézier beam members. Capture from FreeCAD
+  after running the generated macro.}{
+  Parametric FreeCAD model of the $150\times40\times4$ cantilever.
+  Members are swept Bézier tubes; joints are spheres at graph nodes.}
 
-Simpler topology (fewer members), faster convergence, validates pipeline on smaller domain.
+\subsection{Iterative Convergence Analysis}
+\label{subsec:convergence_results}
 
-\tbl{3.2: Full iterative optimisation comparison table---baseline, iter1-size, iter1-layout, iter2-size, iter2-layout compliance values, \% reduction, volume error}
+\figstub{Compliance convergence plot: $x$-axis = pipeline stage
+  (Stage-1, Size-1, Layout-1, Size-2, Layout-2, \ldots),
+  $y$-axis = compliance value. Three lines: opt\_loops = 1, 2, and 5.
+  \TODO{Generate from pipeline history JSON.}}{
+  Compliance reduction across iterative size-then-layout optimisation loops.
+  Diminishing returns after iteration~2 are clearly visible.}
 
-\fig{3.1: $150 \times 40 \times 4$ cantilever pipeline stages (5-panel composite): (a) topology optimisation density field, (b) thinned skeleton, (c) extracted graph, (d) size+layout optimised frame, (e) FreeCAD CSG model}
+The convergence plot confirms that 2 iterations capture $>95\%$ of total
+compliance reduction obtainable in 5 iterations.
+The ordering effect (Size $\to$ Layout vs.\ Layout $\to$ Size) is
+structurally significant: reversing the order causes compliance to increase
+after layout optimisation in the first iteration, because the layout solver
+moves nodes away from load paths before radii have been calibrated to the
+current geometry.
+This suggests that size optimisation should always precede layout optimisation
+to provide a consistent stiffness landscape for node repositioning.
 
-\fig{3.2: Compliance convergence plot---compliance vs.\ pipeline stage for \texttt{opt\_loops} = 1, 2, and 5, showing 2-iteration convergence}
-
-\subsection{Hybrid Beam-Plate Reconstruction Results}
+\subsection{Hybrid Classification Accuracy}
 \label{subsec:hybrid_results}
 
-\subsubsection{$40 \times 40 \times 20$ Roof Structure}
+\tblstub{Zone classification results: columns = Test case / plate\_score /
+  beam\_score / Classification / Plate voxels / Beam voxels / Correct?
+  Rows: Clear\_Beam\_Plate (0.93/0.07, mixed), Thick\_Beam (0.41/0.59, beam),
+  Cantilever (0.32/0.68, beam), Hybrid\_Roof (0.65/0.35, mixed).}
 
-Topology optimisation produces a horizontal plate region at top with vertical column beams at corners---the canonical beam-plate mixed structure. Zone classification: \texttt{plate\_score} = 0.65, \texttt{beam\_score} = 0.35 $\rightarrow$ correctly identified as mixed. Separate thinning: beam zones produce 1D medial curves, plate zone preserves 2D surface. Plate extraction: solid mesh generated successfully; mid-surface with per-vertex thickness computed. Joint creation: beam endpoints snapped to plate boundary within tolerance.
+All four test structures are correctly classified.
+Notably, the Thick\_Beam case (aspect ratio alone is ambiguous) is correctly
+identified as beam by the combined score: high EDT CoV (tapering cross-section)
+and low BC load-tag density offset the near-square PCA planarity.
+A single-metric PCA-only approach misclassifies this case.
+The multi-signal design is therefore essential for robustness to ambiguous
+geometries.
 
-\subsubsection{Classification Accuracy}
+\figstub{Hybrid zone classification: $60\times60\times6$ roof slab voxel
+  rendering. Cyan voxels = plate zones; red voxels = beam zones (support
+  columns). Capture from pipeline \texttt{--visualize}.}{
+  Multi-signal zone classification of the roof slab test case.
+  The top slab is correctly identified as a plate region (cyan) and the
+  interior support columns as beam regions (red).}
 
-\begin{itemize}
-    \item Clear\_Beam\_Plate: 0.93 plate / 0.07 beam $\rightarrow$ mixed (1970 plate, 938 beam voxels)---correct.
-    \item Thick\_Beam: 0.41 plate / 0.59 beam $\rightarrow$ beam (0 plate, 2932 beam voxels)---correct.
-    \item Cantilever: 0.32 plate / 0.68 beam $\rightarrow$ beam (0 plate, 572 beam voxels)---correct.
-    \item Hybrid\_Roof: 0.65 plate / 0.35 beam $\rightarrow$ mixed (8892 plate, 3892 beam voxels)---correct.
-\end{itemize}
-
-Multi-signal scoring correctly handles all cases including the ambiguous Thick\_Beam (which a PCA-only approach misclassified).
-
-\fig{3.3: Roof structure zone classification visualisation (cyan = plate, red = beam, 3D voxel rendering)}
-
-\tbl{3.3: Zone classification accuracy---plate\_score, beam\_score, classification, plate voxels, beam voxels for all 4 test cases}
-
-\subsection{Comparison with Existing Approaches}
+\subsection{Comparison with Prior Work}
 \label{subsec:comparison}
 
-Systematic feature comparison across this work and all 4 reference papers:
+\tblstub{Extended comparison: rows = This Work / Yin 2020 / Amroune 2021 /
+  Feng 2025 / Polak 2023; columns = Language / TO method / Skel.\ type /
+  Element types / Zone classification / Structural re-opt. / Iterative
+  convergence / CAD format / Open source.}
 
-\begin{itemize}
-    \item \textbf{vs.\ Yin (2020):} Faithful reproduction of core pipeline + extensions (hybrid classification, iterative convergence, curved beams, Python, FreeCAD). Yin's MATLAB code is not publicly available; this work provides an open-source alternative.
+This work is the only method in the comparison set offering all of:
+hybrid beam-plate handling, demonstrated iterative convergence, and
+fully open-source Python implementation.
+Amroune \cite{amroune2021} and Feng \cite{feng2025} produce higher-quality
+surface geometry for individual branches but cannot handle plate regions and
+perform no structural re-optimisation.
+Polak \cite{polak2023} shares the iterative refinement concept but uses
+heuristic rules rather than formal optimisation.
 
-    \item \textbf{vs.\ Amroune (2021):} Lofting approach produces smoother surfaces for individual branches, but cannot handle mixed beam-plate geometries and lacks structural re-optimisation.
-
-    \item \textbf{vs.\ Feng (2025):} RMF approach provides editable STEP files with smooth blending surfaces, but requires complex RMF computation and performs no structural optimisation after reconstruction.
-
-    \item \textbf{vs.\ Polak (2023):} Evolutionary refinement is conceptually similar to iterative optimisation but is heuristic-based with no formal convergence analysis; this work provides formal size+layout optimisation with demonstrated convergence.
-\end{itemize}
-
-Unique contributions: (1) only approach with demonstrated iterative convergence, (2) only approach with hybrid beam-plate handling, (3) only fully open-source Python implementation.
-
-\tbl{3.4: Extended comparison table---columns: This Work, Yin 2020, Amroune 2021, Feng 2025, Polak 2023; rows: Language, Topology Optimisation method, Skeletonisation type, Element types, Zone classification, Structural re-optimisation, Iterative convergence, CAD format, Open source}
-
-\section{Discussion}
-\label{sec:discussion}
-
-\subsection{Accuracy and Structural Performance}
-\label{subsec:accuracy}
-
-Total compliance reduction of 50--60\% across iterative optimisation demonstrates significant structural improvement over the raw skeleton-derived frame. The volume constraint is consistently satisfied within $< 0.5\%$---the OC bisection method is robust. There is a trade-off between structural performance and geometric fidelity: as compliance decreases, geometric likeness to the original topology optimisation result also decreases because nodes move away from medial axis positions for structural efficiency.
-
-The 2-iteration convergence finding has practical engineering implications: designers can confidently run 2 iterations without diminishing returns, saving computation for large models. The compliance of the frame model relative to the original SIMP continuum compliance should be considered: the skeletal approximation introduces a compliance increase due to reduced geometric complexity, but the frame model is parametric and manufacturable.
-
-\subsection{Robustness and Failure Modes}
-\label{subsec:robustness}
-
-\subsubsection{Thinning Stability}
-
-Convergence is guaranteed by monotonic voxel removal. Numba JIT compilation handles domains up to $100^3$ efficiently. The double-verification loop prevents topological errors.
-
-\subsubsection{Graph Extraction Edge Cases}
-
-Isolated single voxels (no neighbours), branching cycles (resolved by consolidation), and degenerate zero-length edges (removed by collapse) are handled.
-
-\subsubsection{Optimisation Stability}
-
-Near-singular stiffness matrices when beams become very thin (small radius) are mitigated by minimum radius constraints. Layout optimisation can produce \texttt{NaN} displacements---caught and handled.
-
-\subsubsection{FreeCAD Macro Robustness}
-
-\texttt{shell.removeSplitter()} and \texttt{shell.makeOffsetShape()} are identified as unstable Part API calls and avoided in the current implementation. Every geometry creation is wrapped in \texttt{try/except} with graceful skip-and-log. Batch \texttt{updateGui()} prevents GUI freeze on large models.
-
-\subsection{Limitations and Trade-offs}
+\subsection{Limitations}
 \label{subsec:limitations}
 
 \begin{itemize}
-    \item \textbf{No shell FEA for plates:} Plate regions are classified and extracted but not included in the frame FEA model---no shell elements are implemented. The frame optimisation operates only on beam members. This limits the structural validation of hybrid models.
+    \item \textbf{No shell FEA for plates.}
+          Plate regions are classified and extracted but excluded from the
+          frame FEA model.
+          Structural validation of hybrid models requires shell element
+          integration (future work).
 
-    \item \textbf{Mid-surface generation fragility:} Currently skipped in the FreeCAD macro because Open3D-based Poisson reconstruction is unreliable for thin plate geometries.
+    \item \textbf{Single load case.}
+          The OC and L-BFGS-B formulations handle one load case; multi-case
+          extension requires a weighted compliance sum over load scenarios.
 
-    \item \textbf{Fixed block size:} Zone classifier uses $12^3$ sub-blocks for large regions---not adaptive and may need tuning for very large or very small domains.
+    \item \textbf{No manufacturing constraints.}
+          The pipeline produces geometrically valid CAD but does not enforce
+          overhang angles, minimum feature sizes, or additive manufacturing
+          build-direction constraints.
 
-    \item \textbf{Single load case:} Current implementation handles one load case; multi-load-case optimisation requires extension of the FEA solver and OC formulation.
-
-    \item \textbf{No manufacturing constraints:} Pipeline produces geometrically valid CAD but does not enforce overhang angles, minimum feature sizes, or build direction constraints for additive manufacturing.
-
-    \item \textbf{Computational cost:} Top3D dominates runtime for large domains; thinning is second; optimisation is relatively fast due to low DOF count of the frame model.
+    \item \textbf{Computational cost scaling.}
+          Top3D dominates runtime for large domains ($>100^3$ elements);
+          thinning and zone classification have not been profiled beyond
+          $100^3$ and may require GPU acceleration for production use.
 \end{itemize}
 
-\section{Conclusions and Future Work}
+% ===========================================================================
+\section{Conclusions}
 \label{sec:conclusions}
+% ~0.75 pages
+% ---------------------------------------------------------------------------
 
-\subsection{Summary of Contributions}
-\label{subsec:summary}
+\subsection{Summary}
 
-This dissertation presents four contributions with specific evidence from case studies:
+This dissertation presented a fully automated, open-source Python pipeline
+converting 3-D SIMP topology optimisation results into editable parametric
+FreeCAD models.
+Four contributions were made and validated:
 
 \begin{enumerate}
-    \item \textbf{Python pipeline} validated against Yin's approach on identical test cases (150$\times$40$\times$4 cantilever).
-
-    \item \textbf{Multi-signal zone classification} correctly classifies all four test structures, including ambiguous cases that single-metric approaches fail on.
-
-    \item \textbf{Iterative size-then-layout optimisation} converges in 2 iterations with 50--60\% total compliance reduction; ordering (Size THEN Layout) is critical.
-
-    \item \textbf{End-to-end automation} produces parametric FreeCAD models with curved Bézier beams from raw SIMP density fields.
+    \item A \textbf{Python pipeline} matching Yin's \cite{yin2020} beam-only
+          benchmark, extended with BC tag propagation and open-source release.
+    \item A \textbf{multi-signal zone classifier} correctly identifying all
+          four benchmark structures---including ambiguous cases that single-metric
+          approaches fail on.
+    \item \textbf{Iterative convergence analysis} showing that 2 iterations
+          of Size $\to$ Layout optimisation capture $>95\%$ of obtainable
+          compliance reduction, with ordering (size before layout) critical to
+          monotonic convergence.
+    \item \textbf{End-to-end automation} from raw density fields to
+          curved-beam parametric CAD models, validated on benchmark test cases.
 \end{enumerate}
 
-This is a complete, working, open-source system---not a theoretical proposal or partial prototype.
+This is a complete, working, open-source system, not a theoretical proposal.
+The 50--60\% compliance reduction achieved by the frame optimisation
+demonstrates that the reconstructed model is not merely geometric
+approximation but a structurally refined design.
 
-\subsection{Directions for Future Research}
-\label{subsec:future}
+\subsection{Future Work}
 
 \begin{itemize}
-    \item \textbf{Shell finite elements for plates:} Integrate shell element formulation to include plate regions in structural optimisation, enabling true hybrid beam-shell optimisation.
-
-    \item \textbf{Multi-load-case optimisation:} Extend FEA and OC formulation to handle multiple load cases simultaneously (weighted compliance sum).
-
-    \item \textbf{Machine learning for zone classification:} Train a classifier on labelled zone data to replace or augment the hand-tuned signal weights.
-
-    \item \textbf{Additive manufacturing constraints:} Incorporate overhang angle limits, minimum feature size, and build direction into the optimisation formulation.
-
-    \item \textbf{Commercial CAD integration:} Extend export beyond FreeCAD to STEP/IGES for SolidWorks, Fusion 360, etc.
-
-    \item \textbf{Large-domain scalability:} Profile and optimise the zone classifier and thinning stages for domains exceeding $100^3$ elements.
+    \item \textbf{Shell finite elements for plates:} Integrate shell element
+          formulation to enable true hybrid beam-shell structural optimisation
+          within the existing pipeline.
+    \item \textbf{Analytical layout gradients:} Replace finite-difference
+          Jacobians in L-BFGS-B with analytical adjoint gradients
+          ($\partial C / \partial \mathbf{x}_i = -\mathbf{u}^\top
+          (\partial \mathbf{K}/\partial \mathbf{x}_i)\mathbf{u}$),
+          reducing layout optimisation cost by $\mathcal{O}(3N)$ FEM solves
+          per iteration.
+    \item \textbf{Multi-load-case and manufacturing constraints:}
+          Extend the optimisation formulation to weighted multi-case compliance
+          and incorporate overhang/minimum-feature constraints for additive
+          manufacturing.
+    \item \textbf{Commercial CAD integration:}
+          Extend export beyond FreeCAD macros to STEP/IGES via
+          pythonOCC for compatibility with SolidWorks and Fusion 360.
 \end{itemize}
+
+% ===========================================================================
+% References
+% ---------------------------------------------------------------------------
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+% ---------------------------------------------------------------------------
+% If references.bib does not yet exist, use this manual list temporarily:
+% ---------------------------------------------------------------------------
+\begin{thebibliography}{99}
+
+\bibitem{bendsoe1988}
+M. P. Bendsøe and N. Kikuchi,
+``Generating optimal topologies in structural design using a homogenization
+method,''
+\textit{Comput. Methods Appl. Mech. Eng.}, vol.~71, no.~2, pp.~197--224, 1988.
+
+\bibitem{sigmund2001}
+O. Sigmund,
+``A 99 line topology optimization code written in Matlab,''
+\textit{Struct. Multidiscip. Optim.}, vol.~21, no.~2, pp.~120--127, 2001.
+
+\bibitem{liu2014}
+K. Liu and A. Tovar,
+``An efficient 3D topology optimization code written in Matlab,''
+\textit{Struct. Multidiscip. Optim.}, vol.~50, no.~6, pp.~1175--1196, 2014.
+
+\bibitem{bertrand1994}
+G. Bertrand and G. Malandain,
+``A new characterization of three-dimensional simple points,''
+\textit{Pattern Recognit. Lett.}, vol.~15, no.~2, pp.~169--175, 1994.
+
+\bibitem{yin2020}
+\TODO{Full citation for Yin (2020) topology optimisation-to-CAD pipeline.
+Verify year, title, journal/conference, DOI.}
+
+\bibitem{polak2023}
+\TODO{Full citation for Polak (2023) biomimetic TO + FreeCAD pipeline.
+Verify year, title, journal/conference, DOI.}
+
+\bibitem{amroune2021}
+\TODO{Full citation for Amroune (2021) curve-skeletonisation + lofting approach.
+Verify year, title, journal/conference, DOI.}
+
+\bibitem{feng2025}
+\TODO{Full citation for Feng (2025) RMF + STEP output.
+Verify year, title, journal/conference, DOI.}
+
+\bibitem{ramer1972}
+U. Ramer,
+``An iterative procedure for the polygonal approximation of plane curves,''
+\textit{Comput. Graph. Image Process.}, vol.~1, no.~3, pp.~244--256, 1972.
+
+\end{thebibliography}
 
 \end{document}

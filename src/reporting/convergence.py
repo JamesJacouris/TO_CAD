@@ -155,13 +155,13 @@ def plot_size_layout_convergence(convergence_stages, output_path):
         return
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    fig.subplots_adjust(bottom=0.12)
+    fig.subplots_adjust(bottom=0.16)
 
     ax.plot(cum_x, cum_c, color=_BLUE, linewidth=1.2, zorder=3)
 
     # ── Markers + annotations: stage STARTS only + final point ─────────────
-    # Stagger y-offsets so adjacent labels don't collide
-    _y_offs = [8, 22, 10, 24, 12, 26]
+    # Stagger y-offsets closer to points to reduce clutter
+    _y_offs = [4, 10, 5, 12, 6, 14]
     all_annots = stage_starts + [(cum_x[-1], cum_c[-1])]
     for i, (x, c) in enumerate(all_annots):
         yo = _y_offs[i % len(_y_offs)]
@@ -186,14 +186,14 @@ def plot_size_layout_convergence(convergence_stages, output_path):
     ax.grid(axis='y', color=_GREY, alpha=0.30, linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
 
-    # ── S / L timeline bar (inside graph, lower left) ──────────────────────
+    # ── S / L timeline bar (inside graph, lower left with gap) ──────────────
     ax2 = ax.twiny()
     ax2.set_xlim(ax.get_xlim())
     ax2.set_xticks([])
     ax2.xaxis.set_visible(False)
 
-    bar_y   = 0.06
-    arrow_y = 0.08
+    bar_y   = 0.10
+    arrow_y = 0.12
     total_x = max(cum_x)
 
     ax.annotate('', xy=(1.0, arrow_y), xycoords='axes fraction',
@@ -258,7 +258,7 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
         return
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    fig.subplots_adjust(bottom=0.12)
+    fig.subplots_adjust(bottom=0.18)
 
     n_simp   = 0
     rescaled = []
@@ -306,8 +306,8 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
                 transform=ax.transAxes, ha='left', va='top',
                 fontsize=6.5, color=_DARK, style='italic')
 
-    # ── Markers + annotations ───────────────────────────────────────────────
-    _y_offs = [8, 22, 10, 24, 12, 26]
+    # ── Markers + annotations (skip SIMP end = frame start to avoid duplication) ─
+    _y_offs = [4, 10, 5, 12, 6, 14]
 
     def _mark(x, c, colour, idx):
         ax.plot(x, c, 's', color=colour, markersize=5, zorder=5,
@@ -320,7 +320,6 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
     idx = 0
     if rescaled:
         _mark(0, rescaled[0], _RED, idx);          idx += 1
-        _mark(n_simp - 1, rescaled[-1], _RED, idx); idx += 1
     for x, c in frame_starts:
         _mark(x, c, _BLUE, idx); idx += 1
     if cum_x:
@@ -328,7 +327,7 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
 
     # ── Axes ────────────────────────────────────────────────────────────────
     ax.set_xlabel('Iterations')
-    ax.set_ylabel('Compliance  (E = 1000 MPa, SIMP rescaled to frame scale)')
+    ax.set_ylabel('Compliance (E = 1000 MPa)')
     if all_x:
         ax.set_xlim(0, max(all_x))
     ax.set_ylim(bottom=0)
@@ -352,8 +351,8 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
     ax2.set_xticks([])
     ax2.xaxis.set_visible(False)
 
-    bar_y   = 0.06
-    arrow_y = 0.08
+    bar_y   = 0.10
+    arrow_y = 0.12
 
     ax.annotate('', xy=(1.0, arrow_y), xycoords='axes fraction',
                 xytext=(0.01, arrow_y),

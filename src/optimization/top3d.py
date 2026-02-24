@@ -191,9 +191,10 @@ class Top3D:
         change = 1.0
         
         print(f"Starting Optimization (Mesh: {self.nelx}x{self.nely}x{self.nelz})")
-        
+
         start_time = time.time()
-        
+        self.compliance_history = []
+
         while change > tolx and loop < max_loop:
             loop += 1
             
@@ -202,7 +203,7 @@ class Top3D:
             x_flat = self.xPhys.flatten(order='F')
             
             Emin = 1e-9
-            E0 = 1.0
+            E0 = 1000.0  # Match frame FEM (size_opt / layout_opt default E=1000)
             
             # Element stiffness scaling
             filt_stiff = Emin + x_flat**self.penal * (E0 - Emin) 
@@ -242,7 +243,8 @@ class Top3D:
             u_ele = u[edofMat] 
             ce = np.sum((u_ele @ KE) * u_ele, axis=1)
             c = np.sum((Emin + x_flat**self.penal * (E0 - Emin)) * ce)
-            
+            self.compliance_history.append(float(c))
+
             dc = -self.penal * (E0 - Emin) * x_flat**(self.penal - 1) * ce
             dv = np.ones(self.nele)
             
@@ -272,7 +274,7 @@ class Top3D:
             print(f" It.: {loop:4d} Obj.: {c:10.4f} Vol.: {np.mean(self.xPhys):6.3f} ch.: {change:6.3f}")
             
         print(f"Optimization Converged in {time.time() - start_time:.2f}s")
-        return self.xPhys
+        return self.xPhys, self.compliance_history
 
     def _prepare_edof_mat_vectorized(self):
         """

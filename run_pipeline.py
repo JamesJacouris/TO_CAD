@@ -43,6 +43,12 @@ from src.optimization.size_opt import optimize_size
 from src.optimization.fem import solve_frame
 from src.problems.tagged_problem import TaggedProblem
 from src.pipelines.baseline_yin.reconstruct import reconstruct_npz
+from src.reporting.convergence import (
+    plot_top3d_convergence,
+    plot_size_layout_convergence,
+    plot_combined_convergence,
+    generate_pipeline_report,
+)
 
 # Optional: curves for Bézier re-fitting after optimization
 try:
@@ -158,6 +164,116 @@ def run_stage(cmd, desc):
     return True
 
 
+def _build_report_data(args, baseline_data, metrics_list, convergence_stages,
+                       top3d_hist, target_volume, c_baseline,
+                       nodes_opt=None, edges_opt=None, radii_opt=None,
+                       baseline_nodes=None):
+    """Assemble the report_data dict consumed by generate_pipeline_report()."""
+    meta = baseline_data.get('metadata', {})
+
+    # ── Top3D section ──────────────────────────────────────────────────────
+    top3d_sec = {}
+    if top3d_hist:
+        top3d_sec = {
+            'mesh_size':  (args.nelx, args.nely, args.nelz),
+            'volfrac':    args.volfrac,
+            'penal':      args.penal,
+            'rmin':       args.rmin,
+            'iterations': len(top3d_hist),
+            'max_loop':   args.max_loop,
+            'converged':  len(top3d_hist) < args.max_loop,
+            'c_initial':  top3d_hist[0],
+            'c_final':    top3d_hist[-1],
+        }
+
+    # ── Reconstruction section ─────────────────────────────────────────────
+    recon_sec = {
+        'solid_voxels':    meta.get('solid_voxels'),
+        'skeleton_voxels': meta.get('skeleton_voxels'),
+        'nodes':  len(baseline_data.get('graph', {}).get('nodes', [])),
+        'edges':  len(baseline_data.get('graph', {}).get('edges', [])),
+        'plates': len(baseline_data.get('plates', [])),
+        'target_volume': target_volume,
+        'zone_stats': meta.get('zone_stats', {}),
+    }
+
+    # ── Per-loop optimisation section ──────────────────────────────────────
+    # Group convergence_stages by loop number
+    loops_dict = {}
+    for stage in convergence_stages:
+        lp = stage['loop']
+        loops_dict.setdefault(lp, {})
+        stype = stage['type']
+        hist  = stage['history']
+        ci    = stage.get('c_init', hist[0] if hist else 0.0)
+        cf    = stage.get('c_final', hist[-1] if hist else 0.0)
+
+        entry = {
+            'iterations': len(hist),
+            'c_initial':  ci,
+            'c_final':    cf,
+        }
+
+        if stype == 'size' and stage.get('radii') is not None:
+            r = stage['radii']
+            entry.update({
+                'radius_min':  float(np.min(r)),
+                'radius_max':  float(np.max(r)),
+                'radius_mean': float(np.mean(r)),
+                'radius_std':  float(np.std(r)),
+            })
+
+        if stype == 'layout':
+            nb = stage.get('nodes_before')
+            na = stage.get('nodes_after')
+            if nb is not None and na is not None and len(nb) == len(na):
+                disp = np.linalg.norm(np.array(na) - np.array(nb), axis=1)
+                entry['max_node_disp']  = float(np.max(disp))
+                entry['mean_node_disp'] = float(np.mean(disp))
+
+        loops_dict[lp][stype] = entry
+
+    opt_loops = [{'loop': lp, **stages} for lp, stages in sorted(loops_dict.items())]
+
+    # ── Overall summary ────────────────────────────────────────────────────
+    final_compliance = None
+    if metrics_list:
+        last = metrics_list[-1]
+        final_compliance = last['c_layout'] if last['stage'] == 'Layout' else last['c_size']
+
+    final_volume = None
+    if radii_opt is not None and nodes_opt is not None and edges_opt is not None:
+        final_volume = float(np.sum(
+            np.pi * radii_opt**2 *
+            np.linalg.norm(nodes_opt[edges_opt[:, 0]] - nodes_opt[edges_opt[:, 1]], axis=1)
+        ))
+
+    vol_err = None
+    if final_volume is not None and target_volume and target_volume > 0:
+        vol_err = abs((final_volume - target_volume) / target_volume * 100.0)
+
+    geo_sim = None
+    if metrics_list:
+        geo_sim = metrics_list[-1].get('geo_score')
+
+    overall_sec = {
+        'baseline_compliance': c_baseline,
+        'final_compliance':    final_compliance,
+        'volume_target':       target_volume,
+        'volume_final':        final_volume,
+        'volume_error_pct':    vol_err,
+        'geometric_similarity': geo_sim,
+    }
+
+    return {
+        'problem_name':      args.problem,
+        'top3d':             top3d_sec,
+        'reconstruction':    recon_sec,
+        'optimization_loops': opt_loops,
+        'overall':           overall_sec,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Baseline Yin + Top3D Unified Pipeline (Main_V2)",
@@ -258,7 +374,30 @@ def main():
     g_skip.add_argument("--skip_top3d", action="store_true", help="Skip Stage 0 (use existing .npz)")
     g_skip.add_argument("--top3d_npz", type=str, default=None, help="Path to existing .npz")
 
+    g_mesh = parser.add_argument_group(
+        "External Mesh Input",
+        "Feed an STL/OBJ/PLY from any external TO solver directly into the pipeline. "
+        "Skips Top3D. Geometry-only by default; add --optimize to run FEM stages.")
+    g_mesh.add_argument("--mesh_input", type=str, default=None, metavar="PATH",
+        help="Path to solid mesh file (STL / OBJ / PLY). "
+             "Replaces --skip_top3d + --top3d_npz.")
+    g_mesh.add_argument("--mesh_pitch", type=float, default=None,
+        help="Voxel size for mesh voxelization in mm (defaults to --pitch).")
+
     args = parser.parse_args()
+
+    # ── External mesh input: voxelise → write NPZ → treat as skip_top3d ────────
+    if args.mesh_input is not None:
+        from src.mesh_import.mesh_voxelizer import save_mesh_as_npz
+        os.makedirs(args.output_dir, exist_ok=True)
+        _vox_pitch = args.mesh_pitch if args.mesh_pitch is not None else args.pitch
+        _mesh_stem = os.path.splitext(os.path.basename(args.mesh_input))[0]
+        _vox_npz   = os.path.join(args.output_dir, f"{_mesh_stem}_voxelized.npz")
+        save_mesh_as_npz(args.mesh_input, _vox_npz, pitch=_vox_pitch)
+        args.skip_top3d = True
+        args.top3d_npz  = _vox_npz
+        if not args.optimize:
+            print("[MeshInput] Geometry-only mode (add --optimize to run FEM stages).")
 
     os.makedirs(args.output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(args.output))[0]
@@ -327,6 +466,15 @@ def main():
 
         if not run_stage(cmd, "STAGE 0: Python Top3D Topology Optimisation"):
             return 1
+
+    # ── Load Top3D compliance history (saved to NPZ by run_top3d.py) ──────
+    top3d_hist = []
+    try:
+        _npz = np.load(npz_path, allow_pickle=True)
+        if 'compliance_history' in _npz:
+            top3d_hist = [float(v) for v in _npz['compliance_history']]
+    except Exception:
+        pass
 
     # ========================================
     # STAGE 1: Baseline Yin Reconstruction
@@ -431,7 +579,12 @@ def main():
     c_baseline = _compute_compliance(baseline_data, problem_config, E=1000.0)
 
     metrics_list = []
+    convergence_stages = []   # {'type', 'loop', 'history'} per size/layout stage
     current_json = stage1_out
+    # Final opt outputs (set inside loop; used for report after loop)
+    nodes_opt = None
+    edges_opt = None
+    radii_opt = None
 
     # Accumulate every stage in execution order for FreeCAD history export
     all_stages = [{"name": "1. Reconstructed", "curves": baseline_data.get("curves", []), "plates": plates_data}]
@@ -461,7 +614,7 @@ def main():
             size_problem = TaggedProblem(load_vector=load_vec)
             size_problem.load_tags_from_json(current_json)
 
-            radii_sized, c_size_init, c_size_final = optimize_size(
+            radii_sized, c_size_init, c_size_final, size_hist = optimize_size(
                 nodes_size, edges_size, radii_size, size_problem,
                 E=1000.0, vol_fraction=1.0, max_iter=args.iters,
                 visualize=args.visualize, target_volume_abs=target_volume
@@ -496,6 +649,11 @@ def main():
                 'geo_score': geo_score_s, 'mean_chamfer': mean_chamfer_s,
                 'n_nodes': len(nodes_size), 'n_edges': len(edges_size),
             })
+            convergence_stages.append({
+                'type': 'size', 'loop': loop_num, 'history': size_hist,
+                'c_init': c_size_init, 'c_final': c_size_final,
+                'radii': radii_sized,
+            })
 
         except Exception as e:
             print(f"[ERROR] Size Optimisation failed: {e}")
@@ -520,7 +678,7 @@ def main():
             layout_problem = TaggedProblem(load_vector=load_vec)
             layout_problem.load_tags_from_json(sized_json)
 
-            nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final = optimize_layout(
+            nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final, layout_hist = optimize_layout(
                 nodes_layout, edges_layout, radii_layout, layout_problem,
                 E=1000.0, move_limit=args.limit, visualize=args.visualize,
                 target_volume_abs=target_volume, snap_dist=args.snap,
@@ -595,6 +753,11 @@ def main():
                 'geo_score': geo_score_l, 'mean_chamfer': mean_chamfer_l,
                 'n_nodes': len(nodes_opt), 'n_edges': len(edges_opt),
             })
+            convergence_stages.append({
+                'type': 'layout', 'loop': loop_num, 'history': layout_hist,
+                'c_init': c_layout_init, 'c_final': c_layout_final,
+                'nodes_before': nodes_layout, 'nodes_after': nodes_opt,
+            })
 
             current_json = layout_json
 
@@ -641,6 +804,53 @@ def main():
         print(f"         Saved to: {hist_path}")
     except Exception as e:
         print(f"[Warning] Could not create history: {e}")
+
+    # ========================================
+    # Convergence Plots + Pipeline Report
+    # ========================================
+    try:
+        fig_base = os.path.join(args.output_dir, base_name)
+
+        # Figure (a) — Top3D SIMP convergence
+        if len(top3d_hist) > 1:
+            plot_top3d_convergence(
+                top3d_hist,
+                f"{fig_base}_fig_top3d",
+                mesh_size=(args.nelx, args.nely, args.nelz),
+                volfrac=args.volfrac,
+            )
+
+        # Figure (b) — Size + Layout optimisation trajectory
+        if convergence_stages:
+            plot_size_layout_convergence(
+                convergence_stages,
+                f"{fig_base}_fig_opt",
+            )
+
+        # Figure (c) — Combined full-pipeline (SIMP + frame on one axis)
+        if convergence_stages and np.isfinite(c_baseline):
+            plot_combined_convergence(
+                top3d_hist, convergence_stages, c_baseline,
+                f"{fig_base}_fig_combined",
+                mesh_size=(args.nelx, args.nely, args.nelz),
+                volfrac=args.volfrac,
+            )
+
+        # Text + JSON pipeline report
+        report_data = _build_report_data(
+            args, baseline_data, metrics_list, convergence_stages,
+            top3d_hist, target_volume, c_baseline,
+            nodes_opt=nodes_opt,
+            edges_opt=edges_opt,
+            radii_opt=radii_opt,
+            baseline_nodes=baseline_nodes,
+        )
+        generate_pipeline_report(report_data, f"{fig_base}_report.txt")
+
+    except Exception as e:
+        print(f"[Warning] Could not generate convergence plots/report: {e}")
+        import traceback
+        traceback.print_exc()
 
     # === Summary ===
     print(f"\n{'='*60}")

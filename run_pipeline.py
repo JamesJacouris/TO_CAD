@@ -519,13 +519,18 @@ def main():
     has_plates = len(baseline_data.get('plates', [])) > 0
     plate_only = (n_beam_edges == 0 and has_plates)
 
-    run_opt = (not plate_only) and (args.optimize or not args.hybrid)
+    # Beam-only (not hybrid) optimises by default, UNLESS the input came from
+    # an external mesh without an explicit --optimize flag (geometry-only mode).
+    _mesh_geo_only = (args.mesh_input is not None and not args.optimize)
+    run_opt = (not plate_only) and (args.optimize or (not args.hybrid and not _mesh_geo_only))
 
     if not run_opt:
         if plate_only:
             print(f"\n[Pipeline] Plate-only structure (0 beam edges). Skipping optimization stages.")
+        elif _mesh_geo_only:
+            print("\n[Pipeline] Mesh input (geometry-only). Skipping Stages 2 & 3. Add --optimize to run FEM.")
         else:
-            print("\n[Pipeline] Hybrid structure detected without --optimize flag. Skipping Stages 2 & 3.")
+            print("\n[Pipeline] Hybrid structure without --optimize. Skipping Stages 2 & 3.")
         final_path = os.path.join(args.output_dir, args.output)
         shutil.copy2(stage1_out, final_path)
 

@@ -149,7 +149,7 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
     
     if len(loads) == 0:
         print("[Error] No loads defined! Optimization cannot proceed.")
-        return radii, 0.0, 0.0  # Return tuple format: (radii, c_init, c_final)
+        return radii, 0.0, 0.0, []  # (radii, c_init, c_final, history)
         
     if visualize:
         # Viz 1: Loads & Initial State
@@ -203,8 +203,8 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
     generate_report(compliance_hist[0], compliance_hist[-1], vol_init, vol_meas, radii_init, radii, it, "Converged" if change < 1e-3 else "Max Iters Reached")
     # --------------------
 
-    # Return radii + initial and final compliance for iteration tracking
-    return radii, compliance_hist[0], compliance_hist[-1]
+    # Return radii + initial/final compliance + full per-iteration history
+    return radii, compliance_hist[0], compliance_hist[-1], list(compliance_hist)
 
 def generate_report(c_init, c_final, v_init, v_final, r_init, r_final, iterations, message, filename="size_opt_report.txt"):
     """

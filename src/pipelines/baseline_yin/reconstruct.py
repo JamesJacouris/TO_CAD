@@ -493,6 +493,19 @@ def reconstruct_npz(npz_path, output_json, **kwargs):
                      plate_mode, curved, visualize).
     """
     import types
+    # Normalise public kwarg aliases → internal _run() attribute names.
+    # Needed because run_pipeline.py uses the public CLI names while the
+    # defaults dict (and _run()) use the reconstruct.py argparse dest names.
+    _alias = {
+        'flatness_ratio':        'flatness',
+        'rdp_epsilon':           'rdp',
+        'min_avg_neighbors':     'min_neighbors',
+        'max_iters':             'skel_iters',
+        'plate_thickness_ratio': 'plate_thickness',
+    }
+    for pub, priv in _alias.items():
+        if pub in kwargs:
+            kwargs.setdefault(priv, kwargs.pop(pub))
     defaults = dict(
         pitch=1.0, skel_iters=50, collapse_thresh=2.0, prune_len=5.0,
         rdp=0.0, radius_mode='edt', vol_thresh=0.3,

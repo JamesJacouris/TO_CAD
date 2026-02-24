@@ -180,10 +180,14 @@ python run_pipeline.py
 --min_avg_neighbors 3
 --visualize
 
+
+
+
+
+
 Full Input
 
 python run_pipeline.py
---skip_top3d
 --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz
 --hybrid
 --output Roof_Structure_strict.json
@@ -201,6 +205,7 @@ python run_pipeline.py
 --collapse_thresh 2.0
 --rdp 2.0
 --snap 5.0
+--skip_top3d
 --radius_mode uniform
 
 python run_pipeline.py
@@ -297,3 +302,93 @@ The roof_slab structure should naturally decompose into:
 
 Plate zone: the thin roof slab (high plate score from planarity + uniform EDT)
 Beam zones: the 9 support columns (high beam score from linearity + BC load/support density)
+
+
+
+
+
+# QUADCOPTER TEST CASE
+
+## Stage 0 — ~5-10 minutes
+python run_top3d.py \
+  --problem quadcopter \
+  --nelx 60 --nely 60 --nelz 20 \
+  --volfrac 0.05 --penal 3.0 --rmin 2.0 --max_loop 100 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.3 --load_patch_frac 0.15 \
+  --output output/hybrid_v2/quadcopter_top3d.npz
+
+## Pipeline (run after Top3D finishes)
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/quadcopter_top3d.npz \
+  --nelx 60 --nely 60 --nelz 20 \
+  --prune_len 2.0 --collapse_thresh 2.0 --rdp 1.0 \
+  --radius_mode uniform --hybrid --visualize \
+  --output quadcopter.json
+
+
+
+python run_pipeline.py \
+    --problem quadcopter \
+  --nelx 60 --nely 60 --nelz 6 \
+  --volfrac 0.10 --penal 3.0 --rmin 2.0 --max_loop 100 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.1 --load_patch_frac 0.1 \
+  --motor_radius 4 \
+  --visualize \
+  --output output/hybrid_v2/quadcopter_v2_top3d.npz
+
+
+
+  python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/quadcopter_v2_top3d_top3d.npz \
+  --nelx 60 --nely 60 --nelz 6 \
+  --prune_len 2.0 --collapse_thresh 2.0 --rdp 1.0 \
+  --radius_mode uniform \
+  --hybrid --optimize \
+  --visualize \
+  --output quadcopter_v2.json
+
+
+
+  # Wider bolt spacing + lower volfrac → clearly separated chord members
+python run_top3d.py --problem quadcopter \
+  --nelx 80 --nely 80 --nelz 6 \
+  --volfrac 0.12 --penal 3.0 --rmin 2.5 --max_loop 150 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.12 --load_patch_frac 0.15 \
+  --motor_bolt_spacing 8 --arm_load_n 3 --arm_load_frac 0.4 \
+  --output output/hybrid_v2/quad_complex_v3_top3d.npz
+
+
+python run_pipeline.py \
+  --problem quadcopter \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/quad_complex_v3_top3d.npz \
+  --nelx 80 --nely 80 --nelz 6 \
+  --volfrac 0.12 --penal 3.0 --rmin 2.5 --max_loop 150 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.12 --load_patch_frac 0.15 \
+  --motor_bolt_spacing 8 --arm_load_n 3 --arm_load_frac 0.4 \
+  --prune_len 2.0 --collapse_thresh 2.0 --rdp 1.0 \
+  --visualize \
+  --output quad_complex_v3.json
+
+
+
+
+
+  python run_pipeline.py \
+  --problem quadcopter \
+  --nelx 60 --nely 60 --nelz 6 \
+  --volfrac 0.1 --penal 3.0 --rmin 2.0 --max_loop 100 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.12 --load_patch_frac 0.12 \
+  --motor_bolt_spacing 6 --arm_load_n 4 --arm_load_frac 0.35 \
+  --arm_void_width 6 \
+  --prune_len 2.0 --collapse_thresh 2.0 --rdp 0.8 \
+  --radius_mode uniform \
+  --visualize \
+  --output quad_branching.json  

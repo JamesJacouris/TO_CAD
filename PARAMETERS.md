@@ -294,6 +294,77 @@ python run_pipeline.py --problem roof_slab \
 
 ---
 
+### `quadcopter`
+
+An X-configuration quadcopter frame. Four motor mount columns are fixed in the XY plane (all Z-layers), and the centre payload is loaded as a Z-column. Fixing/loading **full Z-columns** (not just one face) forces SIMP to route material laterally **in the XY plane**, producing diagonal X-arms rather than through-Z arch structures.
+
+```
+Fixed: 4 motor Z-columns at XY corners (all Z, inset by motor_arm_frac × nelx/nely)
+Load:  centre Z-column at XY centre (all Z, half-width = load_patch_frac × nelx/nely)
+```
+
+```
+  Top-down view (looking along Z axis):
+
+  M ─────────────── M       M = motor mount Z-column (fully fixed)
+   ╲               ╱
+     ╲     ↓     ╱         ↓ = centre payload column (force in -Y)
+       ╲   ·   ╱             · = centre hub
+       ╱   ·   ╲
+     ╱           ╲
+  M ─────────────── M
+
+  Optional: ⊙ circular passive void at each M (--motor_radius)
+```
+
+**Why Z-columns work:** Applying supports and loads to columns (not opposite faces) removes
+the through-Z load path. SIMP then finds the in-plane minimum compliance path — 4 diagonal
+arms from hub to motor corners.
+
+**Quadcopter-specific parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--motor_arm_frac` | float | 0.1 | Motor position as fraction of nelx/nely inset from each corner. 0.1 → motors 10% from corner (long arms). Larger = shorter arms. |
+| `--load_patch_frac` | float | 0.1 | Half-width of the centre payload patch as fraction of nelx/nely. |
+| `--motor_radius` | int | 0 | Radius (elements) of circular passive void at each motor mount. Creates motor cutout holes. 0 = disabled. |
+
+**Recommended domain:** `nelx=nely=60, nelz=6` — thin square plate (frame plane in XY). Thin Z prevents through-Z material paths. Use `--volfrac 0.10` for clean arm definition.
+
+**Typical use:**
+```bash
+# Stage 0: Top3D only (produces X-arm density field)
+python run_top3d.py --problem quadcopter \
+  --nelx 60 --nely 60 --nelz 6 \
+  --volfrac 0.10 --penal 3.0 --rmin 2.0 --max_loop 100 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.1 --load_patch_frac 0.1 \
+  --motor_radius 3 \
+  --output output/hybrid_v2/quadcopter_top3d.npz
+
+# Full pipeline from scratch
+python run_pipeline.py --problem quadcopter \
+  --nelx 60 --nely 60 --nelz 6 \
+  --volfrac 0.10 --penal 3.0 --rmin 2.0 --max_loop 100 \
+  --load_fy -100.0 \
+  --motor_arm_frac 0.1 --load_patch_frac 0.1 --motor_radius 3 \
+  --prune_len 2.0 --collapse_thresh 2.0 --rdp 1.0 \
+  --radius_mode uniform --hybrid --visualize \
+  --output quadcopter.json
+
+# Skip Top3D after first run
+python run_pipeline.py \
+  --skip_top3d --top3d_npz output/hybrid_v2/quadcopter_top3d.npz \
+  --nelx 60 --nely 60 --nelz 6 \
+  --prune_len 2.0 --collapse_thresh 2.0 --rdp 1.0 \
+  --radius_mode uniform --hybrid --visualize \
+  --output quadcopter.json
+```
+
+**Scaling to real dimensions:** At `--pitch 3.3` (3.3 mm/element), a 60×60 domain = 200 mm × 200 mm frame — matching a standard 5-inch racing quad motor-to-motor span.
+
+---
+
 ### `bridge`
 
 Both ends of the bottom face are fixed (entire bottom surface, z=0). Suitable for simply-supported structures spanning in X.

@@ -297,7 +297,7 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
     nodes_new = res.x.reshape(nodes.shape)
     
     # --- Final Report ---
-    generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, res.nit, res.message, target_volume_abs=target_volume_abs)
+    generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, getattr(res, 'nit', 0), res.message, target_volume_abs=target_volume_abs)
     # --------------------
     
     if visualize:
@@ -308,7 +308,7 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
         show_step("Optimized Layout", final_geoms)
         
     # --- Final Report ---
-    generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, res.nit, res.message, target_volume_abs=target_volume_abs)
+    generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, getattr(res, 'nit', 0), res.message, target_volume_abs=target_volume_abs)
     # --------------------
     
     # NEW: Snap Nodes (Collapse Short Edges)

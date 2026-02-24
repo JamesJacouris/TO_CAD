@@ -105,11 +105,26 @@ class Top3D:
 
     def set_fixed_dofs(self, fixed):
         self.fixed_dofs = fixed
-        
+
         # Tag Fixed Regions
         unique_nodes = np.unique(fixed // 3)
         for nid in unique_nodes:
             self._tag_elements_around_node(nid, tag_value=1)
+
+    def set_passive_void(self, passive):
+        """
+        Mark voxels as permanently void (forced to density = 0).
+
+        Args:
+            passive: boolean ndarray of shape (nely, nelx, nelz), True = forced void.
+                     Must be called before optimize().
+        """
+        self._passive_mask = passive.flatten(order='F').astype(bool)
+        # Initialise those elements to zero so they don't count toward volfrac
+        self.x.flatten(order='F')[self._passive_mask] = 0.0
+        self.xPhys[passive] = 0.0
+        # Tag passive voxels in bc_tags (tag=3)
+        self.bc_tags[passive] = 3
 
     def _tag_elements_around_node(self, node_idx, tag_value):
         """
@@ -237,11 +252,19 @@ class Top3D:
             
             # 5. Optimality Criteria Update
             xnew_flat = self._optimality_criteria(x_flat, dc, dv)
+            # Clamp passive voids before filtering
+            if hasattr(self, '_passive_mask'):
+                xnew_flat[self._passive_mask] = 0.0
             xnew = xnew_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
-            
+
             # 6. Filter Design Variable
             xPhys_flat = H @ xnew_flat / Hs
             self.xPhys = xPhys_flat.reshape((self.nely, self.nelx, self.nelz), order='F')
+            # Clamp again after filter (filter can bleed density into passive voxels)
+            if hasattr(self, '_passive_mask'):
+                passive_3d = self._passive_mask.reshape(
+                    (self.nely, self.nelx, self.nelz), order='F')
+                self.xPhys[passive_3d] = 0.0
             
             change = np.max(np.abs(xnew - self.x))
             self.x = xnew

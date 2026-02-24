@@ -228,7 +228,24 @@ def main():
     g_opt.add_argument("--prune_opt_thresh", type=float, default=0.0, help="Percentage (0.0-1.0) of max radius to prune dead-weight edges post-optimization")
     g_opt.add_argument("--snap", type=float, default=5.0, help="Snap distance for node merging (mm)")
     g_opt.add_argument("--problem", type=str, default="tagged",
-                       help="Problem config: 'tagged' (auto from BC tags), 'cantilever', 'roof_slab', 'bridge', 'deck', 'rocker_arm'")
+                       help="Problem config: 'tagged' (auto from BC tags), 'cantilever', 'roof_slab', 'bridge', 'deck', 'rocker_arm', 'quadcopter'")
+    # Quadcopter-specific (passed through to run_top3d.py)
+    g_opt.add_argument("--motor_arm_frac", type=float, default=0.1,
+        help="[Quadcopter] Motor mount position as fraction of nelx/nely inset from each corner (default: 0.1)")
+    g_opt.add_argument("--load_patch_frac", type=float, default=0.1,
+        help="[Quadcopter] Half-width of centre payload patch as fraction of nelx/nely (default: 0.1)")
+    g_opt.add_argument("--motor_radius", type=int, default=0,
+        help="[Quadcopter] Radius (elements) of circular passive void at each motor mount. 0 = disabled.")
+    g_opt.add_argument("--motor_bolt_spacing", type=int, default=0,
+        help="[Quadcopter] Split each motor into 2 bolt columns separated perpendicularly to the arm axis "
+             "(elements). Creates bending moment → parallel arm branches. 0 = single column (default).")
+    g_opt.add_argument("--arm_load_n", type=int, default=0,
+        help="[Quadcopter] Distributed load columns per arm between hub and motor. Creates arm bending → X-bracing. 0 = hub only (default).")
+    g_opt.add_argument("--arm_load_frac", type=float, default=0.3,
+        help="[Quadcopter] Fraction of total load applied to arm load columns. Default: 0.3.")
+    g_opt.add_argument("--arm_void_width", type=int, default=0,
+        help="[Quadcopter] Width (elements) of passive void strip along each arm centreline. "
+             "Forces two distinct skeleton branches per arm. Recommended: 3-5. 0 = disabled (default).")
 
     # === Output & Visualisation ===
     g_out = parser.add_argument_group("Output & Visualisation")
@@ -299,6 +316,14 @@ def main():
         if args.load_x is not None: cmd += ["--load_x", str(args.load_x)]
         if args.load_y is not None: cmd += ["--load_y", str(args.load_y)]
         if args.load_z is not None: cmd += ["--load_z", str(args.load_z)]
+        if args.problem == "quadcopter":
+            cmd += ["--motor_arm_frac", str(args.motor_arm_frac),
+                    "--load_patch_frac", str(args.load_patch_frac),
+                    "--motor_radius", str(args.motor_radius),
+                    "--motor_bolt_spacing", str(args.motor_bolt_spacing),
+                    "--arm_load_n", str(args.arm_load_n),
+                    "--arm_load_frac", str(args.arm_load_frac),
+                    "--arm_void_width", str(args.arm_void_width)]
 
         if not run_stage(cmd, "STAGE 0: Python Top3D Topology Optimisation"):
             return 1

@@ -160,15 +160,15 @@ def plot_size_layout_convergence(convergence_stages, output_path):
     ax.plot(cum_x, cum_c, color=_BLUE, linewidth=1.2, zorder=3)
 
     # ── Markers + annotations: stage STARTS only + final point ─────────────
-    # Stagger y-offsets closer to points to reduce clutter
-    _y_offs = [4, 10, 5, 12, 6, 14]
+    # Stagger both x and y to spread labels and avoid overlap
+    _offsets = [(6, 15), (-25, 22), (6, 8), (-25, 28), (6, 18), (-25, 12)]
     all_annots = stage_starts + [(cum_x[-1], cum_c[-1])]
     for i, (x, c) in enumerate(all_annots):
-        yo = _y_offs[i % len(_y_offs)]
+        xo, yo = _offsets[i % len(_offsets)]
         ax.plot(x, c, 's', color=_BLUE, markersize=5, zorder=5,
                 markeredgewidth=0.5, markeredgecolor='white')
         ax.annotate(f'{c:,.0f}',
-                    xy=(x, c), xytext=(4, yo),
+                    xy=(x, c), xytext=(xo, yo),
                     textcoords='offset points',
                     fontsize=6.5, color=_DARK, rotation=30, va='bottom')
 
@@ -307,13 +307,15 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
                 fontsize=6.5, color=_DARK, style='italic')
 
     # ── Markers + annotations (skip SIMP end = frame start to avoid duplication) ─
-    _y_offs = [4, 10, 5, 12, 6, 14]
+    # Stagger both x and y to spread labels and avoid overlap
+    _offsets = [(6, 15), (-25, 22), (6, 8), (-25, 28), (6, 18), (-25, 12)]
 
     def _mark(x, c, colour, idx):
+        xo, yo = _offsets[idx % len(_offsets)]
         ax.plot(x, c, 's', color=colour, markersize=5, zorder=5,
                 markeredgewidth=0.5, markeredgecolor='white')
         ax.annotate(f'{c:,.0f}',
-                    xy=(x, c), xytext=(4, _y_offs[idx % len(_y_offs)]),
+                    xy=(x, c), xytext=(xo, yo),
                     textcoords='offset points',
                     fontsize=6.5, color=_DARK, rotation=30, va='bottom')
 

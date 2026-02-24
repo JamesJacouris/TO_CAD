@@ -429,15 +429,18 @@ def generate_pipeline_report(report_data, output_path, print_to_console=True):
 # ---------------------------------------------------------------------------
 
 def _save(fig, base_path):
-    """Save figure as PDF + PNG, stripping any existing extension."""
+    """Save figure as PDF + PNG + SVG, stripping any existing extension."""
     base = os.path.splitext(base_path)[0]
     pdf_path = base + '.pdf'
     png_path = base + '.png'
+    svg_path = base + '.svg'
     fig.savefig(pdf_path, format='pdf')
     fig.savefig(png_path, format='png')
+    fig.savefig(svg_path, format='svg')
     plt.close(fig)
     print(f"[Report] Saved figure: {pdf_path}")
     print(f"[Report] Saved figure: {png_path}")
+    print(f"[Report] Saved figure (editable): {svg_path}")
 
 
 def _json_default(obj):

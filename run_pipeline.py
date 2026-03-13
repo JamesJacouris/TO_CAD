@@ -137,19 +137,44 @@ def _print_comparison_table(metrics_list, baseline_volume, target_volume):
     print("="*130 + "\n")
 
 
-def _refit_curves(nodes, edges, radii, curved):
-    """Build curves list from optimised nodes+edges, with optional Bézier fitting."""
+def _refit_curves(nodes, edges, radii, curved, ctrl_pts_list=None):
+    """Build curves list from optimised nodes+edges, with optional Bézier fitting.
+
+    If *ctrl_pts_list* is provided (from IGA optimisation), uses those control
+    points directly instead of re-fitting from scratch.
+    """
     curves = []
-    for (u, v), r in zip(edges, radii):
+    for idx, ((u, v), r) in enumerate(zip(edges, radii)):
         p_start = list(nodes[u])
         p_end = list(nodes[v])
         if curved and _CURVES_AVAILABLE:
-            ctrl_pts = fit_cubic_bezier(np.array(p_start), np.array(p_end), [])
-            pts = sample_curve_points(np.array(p_start), ctrl_pts[0], ctrl_pts[1], np.array(p_end), float(r), N=20)
-            curves.append({"ctrl_pts": ctrl_pts.tolist(), "points": pts, "radius": float(r)})
+            if ctrl_pts_list is not None and ctrl_pts_list[idx] is not None:
+                cp = ctrl_pts_list[idx]  # (2, 3) optimised control points
+            else:
+                cp = fit_cubic_bezier(np.array(p_start), np.array(p_end), [])
+            pts = sample_curve_points(np.array(p_start), cp[0], cp[1], np.array(p_end), float(r), N=20)
+            curves.append({"ctrl_pts": [cp[0].tolist() if hasattr(cp[0], 'tolist') else list(cp[0]),
+                                        cp[1].tolist() if hasattr(cp[1], 'tolist') else list(cp[1])],
+                           "points": pts, "radius": float(r)})
         else:
             curves.append({"points": [p_start + [float(r)], p_end + [float(r)]]})
     return curves
+
+
+def _extract_ctrl_pts(curves_data, n_edges):
+    """Extract ctrl_pts list from Stage 1 JSON curves for IGA optimisation.
+
+    Returns a list of (2, 3) arrays (one per edge), or None entries for
+    edges without control point data.
+    """
+    ctrl_pts_list = []
+    for i in range(n_edges):
+        if i < len(curves_data) and 'ctrl_pts' in curves_data[i]:
+            cp_raw = curves_data[i]['ctrl_pts']
+            ctrl_pts_list.append(np.array(cp_raw, dtype=float))
+        else:
+            ctrl_pts_list.append(None)
+    return ctrl_pts_list
 
 
 def run_stage(cmd, desc):
@@ -343,6 +368,11 @@ def main():
     g_opt.add_argument("--limit", type=float, default=5.0, help="Move limit for layout optimization (mm)")
     g_opt.add_argument("--prune_opt_thresh", type=float, default=0.0, help="Percentage (0.0-1.0) of max radius to prune dead-weight edges post-optimization")
     g_opt.add_argument("--snap", type=float, default=5.0, help="Snap distance for node merging (mm)")
+    g_opt.add_argument("--r_min", type=float, default=0.1, help="Minimum beam radius in size optimisation (mm). Raise to prevent low-sensitivity beams from collapsing (e.g. 0.5)")
+    g_opt.add_argument("--r_max", type=float, default=5.0, help="Maximum beam radius in size optimisation (mm)")
+    g_opt.add_argument("--ctrl_limit", type=float, default=None,
+                       help="Max displacement of Bézier interior control points in layout opt (mm). "
+                            "Defaults to 0.3 × --limit. Reduce (e.g. 0.5) to prevent extreme arch curvature in --curved mode.")
     g_opt.add_argument("--problem", type=str, default="tagged",
                        help="Problem config: 'tagged' (auto from BC tags), 'cantilever', 'roof_slab', 'bridge', 'deck', 'rocker_arm', 'quadcopter'")
     # Quadcopter-specific (passed through to run_top3d.py)
@@ -619,13 +649,22 @@ def main():
             size_problem = TaggedProblem(load_vector=load_vec)
             size_problem.load_tags_from_json(current_json)
 
+            # Extract ctrl_pts from current JSON for IGA curved-beam FEM
+            size_ctrl_pts = None
+            if args.curved and _CURVES_AVAILABLE:
+                size_curves_data = size_input.get('curves', [])
+                size_ctrl_pts = _extract_ctrl_pts(size_curves_data, len(edges_size))
+
             radii_sized, c_size_init, c_size_final, size_hist = optimize_size(
                 nodes_size, edges_size, radii_size, size_problem,
                 E=1000.0, vol_fraction=1.0, max_iter=args.iters,
-                visualize=args.visualize, target_volume_abs=target_volume
+                visualize=args.visualize, target_volume_abs=target_volume,
+                ctrl_pts=size_ctrl_pts, r_min=args.r_min, r_max=args.r_max
             )
 
-            curves_sized = _refit_curves(nodes_size, edges_size, radii_sized, args.curved)
+            # ctrl_pts unchanged after size opt (only radii change)
+            curves_sized = _refit_curves(nodes_size, edges_size, radii_sized,
+                                         args.curved, ctrl_pts_list=size_ctrl_pts)
 
             sized_data = {
                 "metadata": size_input.get("metadata", {}),
@@ -683,27 +722,46 @@ def main():
             layout_problem = TaggedProblem(load_vector=load_vec)
             layout_problem.load_tags_from_json(sized_json)
 
-            nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final, layout_hist = optimize_layout(
+            # Extract ctrl_pts for IGA layout optimisation
+            layout_ctrl_pts = None
+            if args.curved and _CURVES_AVAILABLE:
+                layout_curves_data = layout_input.get('curves', [])
+                layout_ctrl_pts = _extract_ctrl_pts(layout_curves_data, len(edges_layout))
+
+            layout_result = optimize_layout(
                 nodes_layout, edges_layout, radii_layout, layout_problem,
                 E=1000.0, move_limit=args.limit, visualize=args.visualize,
                 target_volume_abs=target_volume, snap_dist=args.snap,
-                design_bounds=design_bounds, node_tags=node_tags
+                design_bounds=design_bounds, node_tags=node_tags,
+                ctrl_pts=layout_ctrl_pts,
+                ctrl_move_limit=args.ctrl_limit
             )
+
+            # Unpack result — 7-tuple when curved (includes ctrl_pts), 6-tuple otherwise
+            if len(layout_result) == 7:
+                nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final, layout_ctrl_pts_opt = layout_result
+            else:
+                nodes_opt, edges_opt, radii_opt, tags_opt, c_layout_init, c_layout_final = layout_result[:6]
+                layout_ctrl_pts_opt = None
+            layout_hist = []  # layout_opt doesn't return history in 6/7-tuple
 
             # --- Post-Optimization Dead-Weight Pruning ---
             if args.prune_opt_thresh > 0.0 and len(radii_opt) > 0:
                 max_r = np.max(radii_opt)
                 cutoff = max_r * args.prune_opt_thresh
-                
+
                 keep_edges = []
                 keep_radii = []
+                keep_ctrl_pts = []
                 keep_node_indices = set(tags_opt.keys())  # Always keep tagged nodes
-                
+
                 # 1. Filter edges
                 for idx, r in enumerate(radii_opt):
                     if r > cutoff:
                         keep_edges.append(edges_opt[idx])
                         keep_radii.append(r)
+                        if layout_ctrl_pts_opt is not None:
+                            keep_ctrl_pts.append(layout_ctrl_pts_opt[idx])
                         keep_node_indices.add(edges_opt[idx][0])
                         keep_node_indices.add(edges_opt[idx][1])
                         
@@ -726,9 +784,12 @@ def main():
                     edges_opt = new_edges
                     radii_opt = np.array(keep_radii)
                     tags_opt = new_tags
+                    if layout_ctrl_pts_opt is not None:
+                        layout_ctrl_pts_opt = keep_ctrl_pts
                     print(f"[Prune] Graph reduced to {len(nodes_opt)} nodes, {len(edges_opt)} edges.")
 
-            curves_layout = _refit_curves(nodes_opt, edges_opt, radii_opt, args.curved)
+            curves_layout = _refit_curves(nodes_opt, edges_opt, radii_opt,
+                                          args.curved, ctrl_pts_list=layout_ctrl_pts_opt)
 
             layout_data = {
                 "metadata": layout_input.get("metadata", {}),

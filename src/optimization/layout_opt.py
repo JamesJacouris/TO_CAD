@@ -18,9 +18,10 @@ from scipy.optimize import minimize
 # Adjust path to import from src
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
-from src.optimization.fem import solve_frame
+from src.optimization.fem import solve_frame, solve_curved_frame
 from src.problems import load_problem_config
 from src.pipelines.baseline_yin.visualization import viz_graph_radii, show_step, viz_loads
+from src.curves.spline import sanitize_bezier_ctrl_pts, fit_cubic_bezier
 # Removed collapse_short_edges import as we implementing local logic
 # from src.pipelines.baseline_yin.postprocessing import collapse_short_edges, recheck_graph, graph_to_arrays
 
@@ -126,36 +127,64 @@ def obj_compliance(x_flat, nodes_shape, edges, radii, problem, E):
     return 0.0
 
 class LayoutOptimizer:
-    def __init__(self, nodes_init, edges, radii, problem, E=1000.0):
+    def __init__(self, nodes_init, edges, radii, problem, E=1000.0,
+                 ctrl_pts=None):
         self.nodes_init = nodes_init.copy()
         self.nodes_shape = nodes_init.shape
         self.edges = edges
         self.radii = radii
         self.problem = problem
         self.E = E
-        
+        self.ctrl_pts = ctrl_pts
+        self.use_curved = ctrl_pts is not None
+        self.n_nodes = len(nodes_init)
+        self.n_edges = len(edges)
+
         # Pre-calc BCs/Loads to lock topology
-        # We don't want BCs jumping nodes during optimization
         self.loads_init, self.bcs_init = problem.apply(self.nodes_init)
-        
+
         # Identify Fixed Nodes & Loaded Nodes (for constraints)
         self.fixed_node_indices = set(self.bcs_init.keys())
         self.loaded_node_indices = set(self.loads_init.keys())
         self.locked_node_indices = self.fixed_node_indices.union(self.loaded_node_indices)
-        
+
     def objective(self, x_flat):
-        nodes = x_flat.reshape(self.nodes_shape)
-        
-        # Use initial BC mapping (Topology is fixed, Geometry changes)
-        # We assume the Load/BC is attached to the NODE ID, not the coordinate.
-        
-        u, compliance, _ = solve_frame(nodes, self.edges, self.radii, self.E, 
-                                      loads=self.loads_init, bcs=self.bcs_init)
+        # Split design vector into nodes + (optional) ctrl_pts
+        nodes = x_flat[:self.n_nodes * 3].reshape(self.nodes_shape)
+
+        if self.use_curved:
+            cp_flat = x_flat[self.n_nodes * 3:]
+            cp_list = self._unpack_ctrl_pts(cp_flat, nodes)
+            u, compliance, _ = solve_curved_frame(
+                nodes, self.edges, self.radii, cp_list,
+                E=self.E, loads=self.loads_init, bcs=self.bcs_init)
+        else:
+            u, compliance, _ = solve_frame(
+                nodes, self.edges, self.radii, self.E,
+                loads=self.loads_init, bcs=self.bcs_init)
         return compliance
+
+    def _unpack_ctrl_pts(self, cp_flat, nodes):
+        """Reconstruct ctrl_pts list from flat vector, applying sanitization."""
+        cp_list = []
+        offset = 0
+        for idx in range(self.n_edges):
+            if self.ctrl_pts[idx] is not None:
+                p1 = cp_flat[offset:offset + 3].copy()
+                p2 = cp_flat[offset + 3:offset + 6].copy()
+                offset += 6
+                u_idx, v_idx = int(self.edges[idx, 0]), int(self.edges[idx, 1])
+                p1s, p2s = sanitize_bezier_ctrl_pts(
+                    nodes[u_idx], nodes[v_idx], p1, p2)
+                cp_list.append(np.array([p1s, p2s]))
+            else:
+                cp_list.append(None)
+        return cp_list
 
 def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
                     visualize=False, target_volume_abs=None, snap_dist=2.0,
-                    design_bounds=None, node_tags=None):
+                    design_bounds=None, node_tags=None, ctrl_pts=None,
+                    ctrl_move_limit=None):
     """Optimise node positions to minimise frame compliance (L-BFGS-B).
 
     Free node positions are updated by ``scipy.optimize.minimize`` with
@@ -183,6 +212,10 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
             [x_max, y_max, z_max]]`` — hard box constraints on node positions.
         node_tags (dict or None): ``{node_idx: tag}`` — tag 1=fixed,
             tag 2=loaded; tagged nodes are excluded from optimisation.
+        ctrl_move_limit (float or None): Maximum allowed displacement of
+            interior Bézier control points per step, mm.  Defaults to
+            ``0.3 * move_limit`` when ``ctrl_pts`` is not None.  Use a
+            smaller value (e.g. 1.0) to prevent extreme curvature.
 
     Returns:
         tuple:
@@ -196,8 +229,21 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
             - **c_initial** (``float``): Compliance before optimisation.
             - **c_final** (``float``): Compliance after optimisation.
     """
-    optimizer = LayoutOptimizer(nodes, edges, radii, problem, E)
-    x0 = nodes.flatten()
+    optimizer = LayoutOptimizer(nodes, edges, radii, problem, E, ctrl_pts=ctrl_pts)
+    use_curved = ctrl_pts is not None
+    if ctrl_move_limit is None:
+        ctrl_move_limit = move_limit * 0.3
+
+    # Build design vector: [node_positions, ctrl_pt_positions (if curved)]
+    x0_parts = [nodes.flatten()]
+    if use_curved:
+        cp_parts = []
+        for idx in range(len(edges)):
+            if ctrl_pts[idx] is not None:
+                cp_parts.append(ctrl_pts[idx].flatten())  # (6,): P1xyz + P2xyz
+        if cp_parts:
+            x0_parts.append(np.concatenate(cp_parts))
+    x0 = np.concatenate(x0_parts)
     
     # Pre-compute max radius per node (for geometry envelope constraint)
     node_max_radii = np.zeros(len(nodes))
@@ -264,14 +310,28 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
             bounds.append((b_min[1], b_max[1]))
             bounds.append((b_min[2], b_max[2]))
             
-    print(f"[Layout] Starting L-BFGS-B Optimization on {len(x0)} variables...")
-    print(f"[Layout] Move Limit: +/- {move_limit} mm")
+    # Append bounds for ctrl_pt variables (if curved)
+    # ctrl_move_limit is intentionally tighter than node move_limit to prevent
+    # extreme arch curvature — defaults to 30% of node move limit.
+    if use_curved:
+        for idx in range(len(edges)):
+            if ctrl_pts[idx] is not None:
+                cp = ctrl_pts[idx]  # (2, 3)
+                for cp_idx in range(2):
+                    for axis in range(3):
+                        val = cp[cp_idx, axis]
+                        bounds.append((val - ctrl_move_limit, val + ctrl_move_limit))
+
+    print(f"[Layout] Starting L-BFGS-B Optimization on {len(x0)} variables "
+          f"({len(x0) - len(nodes)*3} ctrl_pt DOFs)...")
+    print(f"[Layout] Move Limit: +/- {move_limit} mm"
+          + (f", Ctrl Pt Limit: +/- {ctrl_move_limit:.2f} mm" if use_curved else ""))
     
     if visualize:
          # Show Initial
          # Viz 1: Loads & Initial State
          load_geoms = viz_loads(nodes, optimizer.loads_init, optimizer.bcs_init, scale=10.0)
-         graph_geoms = viz_graph_radii(nodes, edges, radii)
+         graph_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
          show_step("Initial Layout", load_geoms + graph_geoms)
          
     # Callback
@@ -294,47 +354,53 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
                    
     print(f"[Layout] Done. Final Compliance: {res.fun:.4f}")
     
-    nodes_new = res.x.reshape(nodes.shape)
-    
+    nodes_new = res.x[:len(nodes) * 3].reshape(nodes.shape)
+
+    # Recover optimised ctrl_pts from the design vector
+    ctrl_pts_opt = None
+    if use_curved:
+        cp_flat = res.x[len(nodes) * 3:]
+        ctrl_pts_opt = optimizer._unpack_ctrl_pts(cp_flat, nodes_new)
+
     # --- Final Report ---
     generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, getattr(res, 'nit', 0), res.message, target_volume_abs=target_volume_abs)
     # --------------------
-    
+
     if visualize:
-        final_geoms = viz_graph_radii(nodes_new, edges, radii)
-        
-        # Comparison (Red=Old, Green=New)?
-        # Or just show result
+        final_geoms = viz_graph_radii(nodes_new, edges, radii,
+                                      ctrl_pts=ctrl_pts_opt if ctrl_pts_opt is not None else ctrl_pts)
         show_step("Optimized Layout", final_geoms)
-        
-    # --- Final Report ---
-    generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, getattr(res, 'nit', 0), res.message, target_volume_abs=target_volume_abs)
-    # --------------------
-    
-    # NEW: Snap Nodes (Collapse Short Edges)
+
+    # Snap Nodes (Collapse Short Edges)
     print(f"[Layout] Snapping Clean-up (Limit={snap_dist}mm)...")
-    
-    # We pass the locked_nodes set to ensure they act as anchors.
-    # The clean-up step will prioritize snapping free nodes TO locked nodes.
-    nodes_clean, edges_clean, radii_clean, tags_clean = snap_nodes(nodes_new, edges, radii, snap_dist, locked_nodes=optimizer.locked_node_indices, node_tags=node_tags)
-    
+
+    nodes_clean, edges_clean, radii_clean, tags_clean, cp_clean = snap_nodes(
+        nodes_new, edges, radii, snap_dist,
+        locked_nodes=optimizer.locked_node_indices,
+        node_tags=node_tags, ctrl_pts=ctrl_pts_opt)
+
     if len(nodes_clean) < len(nodes_new):
         print(f"[Layout] Snapped! Nodes reduced from {len(nodes_new)} to {len(nodes_clean)}")
+        if use_curved:
+            return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, res.fun, cp_clean
         return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, res.fun
     else:
+        if use_curved:
+            return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, res.fun, ctrl_pts_opt
         return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, res.fun
 
-def snap_nodes(nodes, edges, radii, tol, locked_nodes=None, node_tags=None):
+def snap_nodes(nodes, edges, radii, tol, locked_nodes=None, node_tags=None,
+               ctrl_pts=None):
     """
     Merges nodes closer than tol connected by an edge.
-    Updates edges, radii, AND node_tags.
+    Updates edges, radii, node_tags, and ctrl_pts.
     Prioritizes keeping the position of locked_nodes (anchors).
     """
     if locked_nodes is None:
         locked_nodes = set()
     else:
         locked_nodes = set(locked_nodes)
-        
+
     if node_tags is None:
         node_tags = {}
         
@@ -406,13 +472,30 @@ def snap_nodes(nodes, edges, radii, tol, locked_nodes=None, node_tags=None):
     root_to_new_id = {root: i for i, root in enumerate(unique_roots)}
     edges_out = []
     radii_out = []
+    cp_out = []
     for i, (u, v) in enumerate(edges):
         ru, rv = find(u), find(v)
         if ru != rv:
             edges_out.append([root_to_new_id[ru], root_to_new_id[rv]])
             radii_out.append(radii[i])
-            
-    return nodes_out, np.array(edges_out), np.array(radii_out), new_node_tags
+            if ctrl_pts is not None:
+                cp_out.append(ctrl_pts[i])
+            else:
+                cp_out.append(None)
+
+    # Re-fit ctrl_pts for edges whose endpoints moved due to merging
+    if ctrl_pts is not None:
+        for j in range(len(edges_out)):
+            eu, ev = edges_out[j]
+            if cp_out[j] is None:
+                continue
+            # Re-fit if the merged endpoints differ significantly
+            p0, p3 = nodes_out[eu], nodes_out[ev]
+            cp_out[j] = np.array([
+                *sanitize_bezier_ctrl_pts(p0, p3, cp_out[j][0], cp_out[j][1])
+            ]).reshape(2, 3)
+
+    return nodes_out, np.array(edges_out), np.array(radii_out), new_node_tags, cp_out
 
 def main():
     parser = argparse.ArgumentParser(description="Run Layout Optimization.")
@@ -504,7 +587,9 @@ def main():
                           snap_dist=args.snap, design_bounds=design_bounds,
                           node_tags=node_tags_input)
     
-    if isinstance(res, tuple) and len(res) == 4:
+    if isinstance(res, tuple) and len(res) >= 6:
+        nodes_new, edges_new, radii_new, node_tags_new = res[0], res[1], res[2], res[3]
+    elif isinstance(res, tuple) and len(res) == 4:
         nodes_new, edges_new, radii_new, node_tags_new = res
     elif isinstance(res, tuple) and len(res) == 3:
         nodes_new, edges_new, radii_new = res

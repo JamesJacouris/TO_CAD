@@ -392,3 +392,158 @@ python run_pipeline.py \
   --radius_mode uniform \
   --visualize \
   --output quad_branching.json  
+
+
+
+  # CURVED OPTIMISATION
+
+  ## Full run from scratch with curved IGA optimisation
+python run_pipeline.py \
+  --nelx 40 --nely 20 --nelz 4 --volfrac 0.2 \
+  --problem tagged \
+  --curved \
+  --opt_loops 2 \
+  --output curved_result.json
+
+## Skip Top3D (reuse existing NPZ) — fastest for testing
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --nelx 40 --nely 40 --nelz 20 --volfrac 0.05 \
+  --curved \
+  --opt_loops 2 \
+  --visualize \
+  --output roof_iga.json
+
+## Hybrid beam+plate with curved IGA beams
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --hybrid \
+  --curved \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --junction_thresh 4 \
+  --min_avg_neighbors 3 \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --radius_mode uniform \
+  --optimize \
+  --opt_loops 2 \
+  --visualize \
+  --output hybrid_iga.json
+
+
+  python run_pipeline.py --skip_top3d \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --nelx 40 --nely 40 --nelz 20 --volfrac 0.05 \
+  --hybrid --curved --optimize --opt_loops 2 \
+  --r_min 0.5 --limit 5.0 --ctrl_limit 1.5 \
+  --output roof_hybrid_curved.json
+
+
+
+  # Wall Bracket Test Case
+
+python run_pipeline.py \
+--problem wall_bracket \
+--nelx 60 --nely 30 --nelz 30 \
+--volfrac 0.1 \
+--load_fy -10.0 \
+--output Wall_Bracket_V2.json \
+--visualize \
+--pitch 1.0 \
+--penal 3.0 \
+--rmin 1.5 \
+--max_loop 100 \
+--prune_len 3.0 \
+--collapse_thresh 2.5 \
+--skip_top3d \
+--top3d_npz output/hybrid_v2/Wall_Bracket_top3d.npz \
+--output_dir output/hybrid_v2
+
+
+
+
+# Curved IGA Test Case
+
+# Stage 0: Topology Optimisation (~30s)
+python run_top3d.py \
+  --nelx 60 --nely 10 --nelz 20 \
+  --volfrac 0.10 --penal 3.0 --rmin 1.5 \
+  --problem simply_supported \
+  --max_loop 100 \
+  --output output/simply_supported_top3d.npz
+
+# Stage 1–3: Curved Pipeline (~2min)
+python run_pipeline.py \
+  --top3d_npz output/simply_supported_top3d.npz \
+  --nelx 60 --nely 10 --nelz 20 \
+  --curved --optimize --opt_loops 2 \
+  --r_min 0.5 --limit 5.0 --ctrl_limit 2.0 \
+  --visualize \
+  --skip_top3d \
+  --output output/simply_supported_curved.json
+
+  ## Trial 2
+  # Stage 0: Topology Optimisation
+python run_top3d.py \
+  --nelx 40 --nely 10 --nelz 40 \
+  --volfrac 0.30 --penal 3.0 --rmin 1.5 \
+  --problem l_bracket \
+  --max_loop 100 \
+  --output output/l_bracket_top3d.npz
+
+# Stage 1–3: Curved Pipeline
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/l_bracket_top3d.npz \
+  --nelx 40 --nely 10 --nelz 40 \
+  --curved --optimize --opt_loops 2 \
+  --r_min 0.5 --limit 5.0 --ctrl_limit 2.0 \
+  --visualize \
+  --output output/l_bracket_curved.json
+
+
+  ## 3
+  # Stage 0: Top3D with staggered obstacles (~2min for 80×10×40)
+python run_top3d.py \
+  --nelx 80 --nely 10 --nelz 40 \
+  --volfrac 0.25 --penal 3.0 --rmin 2.0 \
+  --problem obstacle_course \
+  --max_loop 150 \
+  --output output/obstacle_course_top3d.npz
+
+# Stage 1-3: Curved Pipeline
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/obstacle_course_top3d.npz \
+  --nelx 80 --nely 10 --nelz 40 \
+  --curved --optimize --opt_loops 2 \
+  --r_min 0.5 --limit 5.0 --ctrl_limit 2.0 \
+  --visualize \
+  --output output/obstacle_course_curved.json
+
+
+
+
+  The vault problem is added to run_top3d.py. To run it:
+# Stage 0: Topology Optimisation
+python run_top3d.py \
+  --nelx 40 --nely 10 --nelz 30 \
+  --volfrac 0.12 --penal 3.0 --rmin 1.5 \
+  --problem vault \
+  --max_loop 100 \
+  --output output/vault_top3d.npz
+
+# Stage 1-3: Curved Pipeline
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/vault_top3d.npz \
+  --nelx 40 --nely 10 --nelz 30 \
+  --curved --opt_loops 2 \
+  --r_min 0.5 --limit 5.0 --ctrl_limit 2.0 \
+  --visualize \
+  --output output/vault_curved.json

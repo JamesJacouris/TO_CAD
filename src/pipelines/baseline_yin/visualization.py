@@ -413,70 +413,90 @@ def save_zone_visualization(zone_mask, pitch, origin, output_path):
         print(f"[Warning] Could not save zone visualization: {e}")
         return False
 
-def viz_graph_radii(nodes, edges, radii):
+def viz_graph_radii(nodes, edges, radii, ctrl_pts=None, n_bezier=16):
+    """Visualise graph edges coloured by radius.
+
+    Parameters
+    ----------
+    nodes : (N, 3) array
+    edges : (M, 2) or (M, 2+) array — edge connectivity
+    radii : (M,) array — beam radii (drives colour)
+    ctrl_pts : list of (2, 3) arrays or None, length M.
+        When provided, draws Bézier curves instead of straight lines.
+        ``ctrl_pts[i]`` is ``[P1, P2]`` for edge i, or None for straight.
+    n_bezier : int — number of line segments per Bézier curve (default 16)
     """
-    Visualizes graph edges colored by Radius.
-    """
-    # Reuse viz_graph logic but apply colors to LineSet
-    # LineSet colors are per-segment.
-    
+    try:
+        from src.curves.spline import sample_bezier
+        _bezier_available = True
+    except ImportError:
+        _bezier_available = False
+
     geoms = []
-    
-    if len(edges) == 0: return geoms
-    
-    # Normalize radii
-    r_min = np.min(radii)
-    r_max = np.max(radii)
-    if r_max == r_min: r_max += 1e-6
-    
-    all_points = [pt for pt in nodes]
-    all_lines = []
-    line_colors = []
-    
-    current_idx = len(all_points)
-    
-    # Try Matplotlib
+    if len(edges) == 0:
+        return geoms
+
+    r_min_v = np.min(radii)
+    r_max_v = np.max(radii)
+    if r_max_v == r_min_v:
+        r_max_v += 1e-6
+
     try:
         import matplotlib.pyplot as plt
         cmap = plt.get_cmap("jet")
-    except:
+    except Exception:
         cmap = None
-    
+
+    all_points = list(nodes)
+    all_lines = []
+    line_colors = []
+    current_idx = len(all_points)
+
     for i, e in enumerate(edges):
         u, v = int(e[0]), int(e[1])
-        pts = e[3] if len(e) > 3 else []
         r = radii[i]
-        
-        # Color
-        val = (r - r_min) / (r_max - r_min)
-        if cmap:
-            c = cmap(val)[:3]
+        val = (r - r_min_v) / (r_max_v - r_min_v)
+        c = cmap(val)[:3] if cmap else [val, 0, 1 - val]
+
+        cp = (ctrl_pts[i] if ctrl_pts is not None else None)
+
+        if cp is not None and _bezier_available:
+            # Sample the Bézier curve
+            p0 = np.asarray(nodes[u], dtype=float)
+            p3 = np.asarray(nodes[v], dtype=float)
+            p1 = np.asarray(cp[0], dtype=float)
+            p2 = np.asarray(cp[1], dtype=float)
+            curve_pts = sample_bezier(p0, p1, p2, p3, n_bezier)  # (n_bezier+1, 3)
+            prev_idx = current_idx
+            for j, pt in enumerate(curve_pts):
+                all_points.append(pt.tolist())
+                if j > 0:
+                    all_lines.append([current_idx - 1, current_idx])
+                    line_colors.append(c)
+                current_idx += 1
         else:
-            c = [val, 0, 1-val] # Red-Blue
-            
-        # Segments
-        prev_idx = u
-        for pt in pts:
-            all_points.append(pt)
-            new_idx = current_idx
-            all_lines.append([prev_idx, new_idx])
+            # Fall back: use any skeleton intermediate points stored in edge
+            pts = e[3] if hasattr(e, '__len__') and len(e) > 3 else []
+            prev_idx = u
+            for pt in pts:
+                all_points.append(pt)
+                all_lines.append([prev_idx, current_idx])
+                line_colors.append(c)
+                prev_idx = current_idx
+                current_idx += 1
+            all_lines.append([prev_idx, v])
             line_colors.append(c)
-            prev_idx = new_idx
-            current_idx += 1
-        all_lines.append([prev_idx, v])
-        line_colors.append(c)
-        
+
     line_set = o3d.geometry.LineSet()
     line_set.points = o3d.utility.Vector3dVector(all_points)
     line_set.lines = o3d.utility.Vector2iVector(all_lines)
     line_set.colors = o3d.utility.Vector3dVector(line_colors)
-    
     geoms.append(line_set)
-    
-    # Add Nodes
+
+    # Nodes as black dots
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(nodes)
     pcd.paint_uniform_color([0, 0, 0])
     geoms.append(pcd)
-    
+
     return geoms

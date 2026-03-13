@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--max_loop", type=int, default=50, help="Max Iterations")
     parser.add_argument("--output", default="python_top3d_result.npz", help="Output .npz file")
     # Problem Type
-    parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "roof_slab", "bridge", "deck", "quadcopter"], help="Problem type")
+    parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "roof_slab", "bridge", "deck", "quadcopter", "simply_supported", "l_bracket", "obstacle_course", "vault"], help="Problem type")
     parser.add_argument("--load_dist", type=str, default="point", choices=["point", "surface_top", "surface_bottom"], help="Load distribution")
     # Quadcopter-specific
     parser.add_argument("--motor_arm_frac", type=float, default=0.1,
@@ -321,6 +321,177 @@ def main():
             # Set flag to skip standard point load application
             args.load_dist = "already_applied"
 
+    elif args.problem == "simply_supported":
+        # Simply-supported span: end-column supports at (x=0, z=0) and (x=nelx, z=0),
+        # central top load at (x=nelx//2, z=nelz).
+        # Produces classic arch/Michell truss topology — ideal for curved beam IGA testing:
+        # two diagonal compression members arc from each support to the central load point;
+        # members are 20-35 voxels long, naturally curved, and stable for IGA condensation.
+
+        # Fixed: left and right bottom edge columns (x=0 or x=nelx, z=0, all y)
+        fixed_mask = ((il_flat == 0) | (il_flat == args.nelx)) & (kl_flat == 0)
+        fixed_node_indices = np.where(fixed_mask)[0]
+        fixed_dofs_list = []
+        for n in fixed_node_indices:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[simply_supported] Fixed {len(fixed_node_indices)} nodes at "
+              f"(x=0, z=0) and (x={args.nelx}, z=0) — end-column supports.")
+
+        # Loaded: centre top column (x=nelx//2, z=nelz, all y) — downward (-Z)
+        cx = args.nelx // 2
+        load_mask = (il_flat == cx) & (kl_flat == args.nelz)
+        load_node_indices = np.where(load_mask)[0]
+        n_load = len(load_node_indices)
+        if n_load == 0:
+            raise ValueError("[simply_supported] No load nodes found at centre top — check nelx/nelz.")
+        fz_total = args.load_fz if args.load_fz != 0.0 else -1000.0  # default: 1000 N downward
+        for n in load_node_indices:
+            solver.set_load(3*n + 2, fz_total / n_load)
+        print(f"[simply_supported] Applied {fz_total:.1f} N (-Z) across {n_load} nodes "
+              f"at x={cx}, z={args.nelz} (centre top).")
+        args.load_dist = "already_applied"
+
+    elif args.problem == "l_bracket":
+        # L-bracket: classic TO benchmark that produces curved inner-corner members.
+        # Full rectangular domain with upper-right quadrant removed (passive void).
+        # Fixed at top of vertical arm (x=0, z=nelz); loaded at tip of horizontal
+        # arm (x=nelx, z=0) pointing downward.  The stress concentration at the
+        # inner corner (x≈nelx/2, z≈nelz/2) always develops a curved fillet member.
+        # Recommended: --nelx 40 --nely 10 --nelz 40 --volfrac 0.30
+        nx, ny, nz = args.nelx, args.nely, args.nelz
+
+        # Passive void: upper-right quadrant (removes 25% of domain)
+        passive = np.zeros((ny, nx, nz), dtype=bool)
+        x_cut = nx // 2
+        z_cut = nz // 2
+        passive[:, x_cut:, z_cut:] = True
+        solver.set_passive_void(passive)
+        n_void = int(passive.sum())
+        print(f"[l_bracket] Passive void: x∈[{x_cut},{nx}), z∈[{z_cut},{nz}) — "
+              f"{n_void} voxels ({100*n_void/(nx*ny*nz):.0f}% of domain)")
+
+        # Fixed: entire top face of vertical arm (z=nz, x∈[0, x_cut], all y)
+        # Must fix a face, not just an edge — single column leaves rigid body modes.
+        fixed_mask = (kl_flat == nz) & (il_flat <= x_cut)
+        fixed_nodes = np.where(fixed_mask)[0]
+        fixed_dofs_list = []
+        for n in fixed_nodes:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[l_bracket] Fixed {len(fixed_nodes)} nodes at z={nz}, x∈[0,{x_cut}] (top face of vertical arm)")
+
+        # Load: tip of horizontal arm — column at (x=nx, z=0, all y), downward (-Z)
+        load_mask = (il_flat == nx) & (kl_flat == 0)
+        load_nodes = np.where(load_mask)[0]
+        n_load = len(load_nodes)
+        if n_load == 0:
+            raise ValueError("[l_bracket] No load nodes found at (x=nelx, z=0).")
+        fz_total = args.load_fz if args.load_fz != 0.0 else -1000.0
+        for n in load_nodes:
+            solver.set_load(3*n + 2, fz_total / n_load)
+        print(f"[l_bracket] Applied {fz_total:.1f} N (-Z) across {n_load} nodes "
+              f"at x={nx}, z=0")
+        args.load_dist = "already_applied"
+
+    elif args.problem == "obstacle_course":
+        # Cantilever with staggered cylindrical voids that force S-curved load paths.
+        # Alternating high/low obstacles compel diagonal web members to weave
+        # around them, producing genuinely curved skeleton edges after thinning.
+        # Top3D convention: Y is vertical (load direction), Z is depth (thin).
+        # Recommended: --nelx 80 --nely 40 --nelz 10 --volfrac 0.25 --rmin 2.0
+        #
+        #  y=ny ┌────┐    ○       ○       ○       ┌────┐
+        #       │    │       ○       ○       ○     │    │
+        #       │    │    ○       ○       ○       │    │
+        #  y=0  └────┘       ○       ○       ○     └────┘ ↓ Load (-Y)
+        #       x=0   voids alternate high/low      x=nx
+        nx, ny, nz = args.nelx, args.nely, args.nelz
+
+        # Staggered cylindrical voids (through-Z depth)
+        passive = np.zeros((ny, nx, nz), dtype=bool)
+        r_hole = max(3, min(nx, ny) // 10)  # proportional to span and height
+
+        # 6 voids in alternating high/low pattern along the span
+        n_holes = 6
+        spacing = nx / (n_holes + 1)
+        holes = []
+        for i in range(n_holes):
+            cx = int((i + 1) * spacing)
+            cy = int(ny * 0.67) if i % 2 == 0 else int(ny * 0.33)
+            holes.append((cx, cy))
+
+        for (cx, cy) in holes:
+            for xi in range(max(0, cx - r_hole), min(nx, cx + r_hole + 1)):
+                for yi in range(max(0, cy - r_hole), min(ny, cy + r_hole + 1)):
+                    if (xi - cx)**2 + (yi - cy)**2 <= r_hole**2:
+                        passive[yi, xi, :] = True  # through all Z (depth) layers
+
+        solver.set_passive_void(passive)
+        n_void = int(passive.sum())
+        print(f"[obstacle_course] {n_holes} cylindrical voids (r={r_hole}) at:")
+        for i, (cx, cy) in enumerate(holes):
+            print(f"  Hole {i}: x={cx}, y={cy}")
+        print(f"  {n_void} void voxels ({100*n_void/(nx*ny*nz):.0f}% of domain)")
+
+        # Fixed: entire left face (x=0)
+        fixed_mask = (il_flat == 0)
+        fixed_nodes = np.where(fixed_mask)[0]
+        fixed_dofs_list = []
+        for n in fixed_nodes:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[obstacle_course] Fixed {len(fixed_nodes)} nodes at x=0 (left face)")
+
+        # Load: right tip at mid-height (x=nx, y=ny//2, all z) — downward (-Y)
+        load_mask = (il_flat == nx) & (jl_flat == ny // 2)
+        load_nodes = np.where(load_mask)[0]
+        n_load = len(load_nodes)
+        if n_load == 0:
+            raise ValueError("[obstacle_course] No load nodes found.")
+        fy_total = args.load_fy if args.load_fy != -1.0 else -1000.0
+        for n in load_nodes:
+            solver.set_load(3*n + 1, fy_total / n_load)
+        print(f"[obstacle_course] Applied {fy_total:.1f} N (-Y, downward) at x={nx}, "
+              f"y={ny//2} ({n_load} nodes)")
+        args.load_dist = "already_applied"
+
+    elif args.problem == "vault":
+        # Barrel vault: wide bottom-edge supports + narrow centre-top load strip.
+        # The offset between wide supports and narrow load forces material into
+        # curved arch paths (parabolic/catenary compression lines).
+        # Recommended: --nelx 60 --nely 10 --nelz 30 --volfrac 0.12
+        nx, ny, nz = args.nelx, args.nely, args.nelz
+
+        # Fixed: wide bottom-edge supports (x≤3 and x≥nx-3, z=0, all y)
+        pad = max(2, nx // 15)  # ~3-4 elements wide support base
+        fixed_mask = ((il_flat <= pad) | (il_flat >= nx - pad)) & (kl_flat == 0)
+        fixed_nodes = np.where(fixed_mask)[0]
+        fixed_dofs_list = []
+        for n in fixed_nodes:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[vault] Fixed {len(fixed_nodes)} nodes at bottom edges "
+              f"(x≤{pad} and x≥{nx-pad}, z=0, all y)")
+
+        # Load: narrow centre strip on top surface (x ∈ [cx-strip, cx+strip], z=nz)
+        cx = nx // 2
+        strip = max(1, nx // 10)  # ~10% of span width
+        load_mask = (
+            (il_flat >= cx - strip) & (il_flat <= cx + strip) &
+            (kl_flat == nz)
+        )
+        load_nodes = np.where(load_mask)[0]
+        n_load = len(load_nodes)
+        if n_load == 0:
+            raise ValueError("[vault] No load nodes found at centre top strip.")
+        fy_total = args.load_fy if args.load_fy != -1.0 else -1000.0
+        for n in load_nodes:
+            solver.set_load(3*n + 1, fy_total / n_load)
+        print(f"[vault] Applied {fy_total:.1f} N (-Y) across {n_load} nodes "
+              f"at centre strip x∈[{cx-strip},{cx+strip}], z={nz}")
+        args.load_dist = "already_applied"
+
     else:
         # Default: Cantilever (Fixed Left Wall x=0)
         fixed_node_indices = np.where(il_flat == 0)[0]
@@ -370,7 +541,7 @@ def main():
         print(f"Force Vector: [{args.load_fx}, {args.load_fy}, {args.load_fz}]")
 
     # Change Iterations
-    xPhys = solver.optimize(max_loop=args.max_loop) 
+    xPhys, _ = solver.optimize(max_loop=args.max_loop)
     
     # Export
     # Save rho, bc_tags, pitch, origin as .npz (compressed dict)

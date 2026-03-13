@@ -18,7 +18,11 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from src.pipelines.baseline_yin.visualization import viz_graph_radii, viz_loads, show_step
-from src.optimization.fem import solve_frame, compute_frame_gradients as compute_sensitivities
+from src.optimization.fem import (solve_frame,
+                                  compute_frame_gradients as compute_sensitivities,
+                                  solve_curved_frame,
+                                  compute_curved_size_gradients)
+from src.curves.spline import bezier_arc_length
 
 def optimality_criteria_update(radii, sensitivities, lengths, vol_frac, target_vol, r_min=0.1, r_max=5.0, move=0.2, eta=0.5):
     """
@@ -87,7 +91,8 @@ def optimality_criteria_update(radii, sensitivities, lengths, vol_frac, target_v
     return r_new
 
 def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1.0,
-                  max_iter=50, visualize=False, target_volume_abs=None):
+                  max_iter=50, visualize=False, target_volume_abs=None,
+                  ctrl_pts=None, r_min=0.1, r_max=5.0):
     """Optimise beam cross-section radii to minimise compliance at fixed volume.
 
     Applies the Optimality Criteria (OC) update rule::
@@ -111,6 +116,9 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
             final radius distribution.
         target_volume_abs (float or None): Target total frame volume
             ``Σ π r² L`` in mm³.  If ``None``, derived from initial radii.
+        r_min (float): Minimum allowed beam radius (mm). Increase this to
+            prevent low-sensitivity beams from collapsing entirely (e.g. 0.5).
+        r_max (float): Maximum allowed beam radius (mm).
 
     Returns:
         tuple:
@@ -119,12 +127,17 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
             - **c_final** (``float``): Compliance after optimisation.
     """
     radii = initial_radii.copy()
-    
-    # Pre-calc lengths
+    use_curved = ctrl_pts is not None
+
+    # Pre-calc lengths (arc length for curved beams, chord for straight)
     lengths = []
-    for u, v in edges:
-        dist = np.linalg.norm(nodes[u] - nodes[v])
-        lengths.append(dist)
+    for idx, (u, v) in enumerate(edges):
+        if use_curved and ctrl_pts[idx] is not None:
+            p0, p3 = nodes[int(u)], nodes[int(v)]
+            p1c, p2c = ctrl_pts[idx][0], ctrl_pts[idx][1]
+            lengths.append(bezier_arc_length(p0, p1c, p2c, p3))
+        else:
+            lengths.append(np.linalg.norm(nodes[int(u)] - nodes[int(v)]))
     lengths = np.array(lengths)
     
     # Target Volume
@@ -154,24 +167,35 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
     if visualize:
         # Viz 1: Loads & Initial State
         load_geoms = viz_loads(nodes, loads, bcs, scale=10.0)
-        graph_geoms = viz_graph_radii(nodes, edges, radii)
+        graph_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
         show_step("Initial Setup (Yellow=Load, Cyan=Fixed)", load_geoms + graph_geoms)
     
     # Optimization Loop
     for it in range(max_iter):
         # 1. FEM
-        u, compliance, _ = solve_frame(nodes, edges, radii, E=E, loads=loads, bcs=bcs)
+        if use_curved:
+            u, compliance, _ = solve_curved_frame(
+                nodes, edges, radii, ctrl_pts, E=E, loads=loads, bcs=bcs)
+        else:
+            u, compliance, _ = solve_frame(
+                nodes, edges, radii, E=E, loads=loads, bcs=bcs)
         compliance_hist.append(compliance)
-        
+
         if np.isnan(compliance):
             print("[ERROR] Beam Graph is singular or disconnected (NaN Compliance). Skipping Size Optimization.")
             break
-            
+
         # 2. Gradient
-        gradients = compute_sensitivities(nodes, edges.astype(int), radii, u, E=E)
+        if use_curved:
+            gradients = compute_curved_size_gradients(
+                nodes, edges.astype(int), radii, ctrl_pts, u, E=E)
+        else:
+            gradients = compute_sensitivities(
+                nodes, edges.astype(int), radii, u, E=E)
         
         # 3. Update (OC)
-        radii_new = optimality_criteria_update(radii, gradients, lengths, vol_fraction, target_vol)
+        radii_new = optimality_criteria_update(radii, gradients, lengths, vol_fraction, target_vol,
+                                               r_min=r_min, r_max=r_max)
         
         # 4. Check Change
         change = np.linalg.norm(radii_new - radii) / np.linalg.norm(radii)
@@ -196,7 +220,7 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
             
     if visualize:
          # Viz 2: Final State
-         final_geoms = viz_graph_radii(nodes, edges, radii)
+         final_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
          show_step("Optimized Frame (Red=Thick, Blue=Thin)", final_geoms)
          
     # --- Final Report ---

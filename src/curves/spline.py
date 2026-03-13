@@ -167,6 +167,40 @@ def fit_cubic_bezier(p0, p3, interior_pts):
 
 
 # ---------------------------------------------------------------------------
+# Bernstein basis functions (for IGA element stiffness integration)
+# ---------------------------------------------------------------------------
+
+def bernstein_basis(xi):
+    """Cubic Bernstein basis values at parameter xi in [0, 1].
+
+    Returns (4,) array [B0, B1, B2, B3].
+    """
+    xi = float(xi)
+    omt = 1.0 - xi  # one minus t
+    return np.array([
+        omt ** 3,
+        3.0 * xi * omt ** 2,
+        3.0 * xi ** 2 * omt,
+        xi ** 3,
+    ])
+
+
+def bernstein_basis_d1(xi):
+    """First derivatives dBi/dxi of cubic Bernstein basis at parameter xi.
+
+    Returns (4,) array [B0', B1', B2', B3'].
+    """
+    xi = float(xi)
+    omt = 1.0 - xi
+    return np.array([
+        -3.0 * omt ** 2,
+        3.0 * omt * (1.0 - 3.0 * xi),
+        3.0 * xi * (2.0 - 3.0 * xi),
+        3.0 * xi ** 2,
+    ])
+
+
+# ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 

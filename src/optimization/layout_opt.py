@@ -128,8 +128,10 @@ def obj_compliance(x_flat, nodes_shape, edges, radii, problem, E):
 
 class LayoutOptimizer:
     def __init__(self, nodes_init, edges, radii, problem, E=1000.0,
-                 ctrl_pts=None):
+                 ctrl_pts=None, geo_reg=0.0, plates=None, plate_thicknesses=None,
+                 sym_data=None, vol_weight=0.0, target_volume=None):
         self.nodes_init = nodes_init.copy()
+        self.nodes_ref = nodes_init.copy()  # Reference geometry for regularization
         self.nodes_shape = nodes_init.shape
         self.edges = edges
         self.radii = radii
@@ -139,6 +141,21 @@ class LayoutOptimizer:
         self.use_curved = ctrl_pts is not None
         self.n_nodes = len(nodes_init)
         self.n_edges = len(edges)
+        self.geo_reg = geo_reg
+        self.plates = plates
+        self.plate_thicknesses = plate_thicknesses
+
+        # Volume penalty: penalize deviation from target volume
+        self._vol_weight = vol_weight if target_volume is not None else 0.0
+        self._target_vol = target_volume if target_volume is not None else 0.0
+        self._c_ref = None  # set on first objective() call for penalty scaling
+        self._last_compliance = 0.0  # pure FEM compliance (no penalties)
+        # Fixed plate volume contribution (plates don't change during layout opt)
+        self._plate_vol_fixed = 0.0
+        if plates and plate_thicknesses:
+            for p, h in zip(plates, plate_thicknesses):
+                area = p.get("area", 0.0)
+                self._plate_vol_fixed += area * h
 
         # Pre-calc BCs/Loads to lock topology
         self.loads_init, self.bcs_init = problem.apply(self.nodes_init)
@@ -148,21 +165,118 @@ class LayoutOptimizer:
         self.loaded_node_indices = set(self.loads_init.keys())
         self.locked_node_indices = self.fixed_node_indices.union(self.loaded_node_indices)
 
-    def objective(self, x_flat):
-        # Split design vector into nodes + (optional) ctrl_pts
-        nodes = x_flat[:self.n_nodes * 3].reshape(self.nodes_shape)
+        # Build free-node mask for regularization (exclude locked nodes)
+        self._free_mask = np.ones(self.n_nodes, dtype=bool)
+        for idx in self.locked_node_indices:
+            if idx < self.n_nodes:
+                self._free_mask[idx] = False
+        self._n_free = int(self._free_mask.sum())
 
-        if self.use_curved:
-            cp_flat = x_flat[self.n_nodes * 3:]
-            cp_list = self._unpack_ctrl_pts(cp_flat, nodes)
+        # ── Symmetry penalty setup ──────────────────────────────────
+        self._sym_pairs = []
+        self._sym_weight = 0.0
+        self._sym_node_info = None
+        if sym_data is not None:
+            from src.optimization.symmetry import find_symmetric_node_pairs
+            self._sym_node_info = find_symmetric_node_pairs(
+                nodes_init, sym_data['planes'], tol=sym_data['tol'],
+                locked_nodes=self.locked_node_indices)
+            self._sym_weight = sym_data.get('weight', 0.1)
+
+            for plane in sym_data['planes']:
+                pname = plane['name']
+                info = self._sym_node_info[pname]
+                # Include pairs where at least one node is free
+                pairs = [(i, j) for i, j in info['node_pairs']
+                         if i not in self.locked_node_indices
+                         or j not in self.locked_node_indices]
+                if pairs:
+                    self._sym_pairs.append({
+                        'axis': plane['axis'],
+                        'center': plane['center'],
+                        'pairs': np.array(pairs, dtype=int),
+                    })
+
+            n_sym = sum(len(sp['pairs']) for sp in self._sym_pairs)
+            print(f"[Layout] Symmetry: {n_sym} node pair(s), "
+                  f"weight={self._sym_weight:.3f}")
+
+    def _solve_compliance(self, nodes, cp_list=None):
+        """Return raw FEM compliance (no penalties)."""
+        if self.use_curved and cp_list is not None:
             u, compliance, _ = solve_curved_frame(
                 nodes, self.edges, self.radii, cp_list,
                 E=self.E, loads=self.loads_init, bcs=self.bcs_init)
+        elif self.plates is not None and len(self.plates) > 0:
+            result = solve_frame(
+                nodes, self.edges, self.radii, self.E,
+                loads=self.loads_init, bcs=self.bcs_init,
+                plates=self.plates,
+                plate_thicknesses=self.plate_thicknesses)
+            u, compliance = result[0], result[1]
         else:
             u, compliance, _ = solve_frame(
                 nodes, self.edges, self.radii, self.E,
                 loads=self.loads_init, bcs=self.bcs_init)
         return compliance
+
+    def objective(self, x_flat):
+        # Split design vector into nodes + (optional) ctrl_pts
+        nodes = x_flat[:self.n_nodes * 3].reshape(self.nodes_shape)
+
+        cp_list = None
+        if self.use_curved:
+            cp_flat = x_flat[self.n_nodes * 3:]
+            cp_list = self._unpack_ctrl_pts(cp_flat, nodes)
+
+        compliance = self._solve_compliance(nodes, cp_list)
+        self._last_compliance = compliance  # track pure compliance
+
+        total = compliance
+
+        # Geometric regularization: penalize deviation from reference topology
+        if self.geo_reg > 0 and self._n_free > 0:
+            disp = nodes[self._free_mask] - self.nodes_ref[self._free_mask]
+            total += self.geo_reg * float(np.sum(disp ** 2)) / self._n_free
+
+        # Symmetry penalty: ||node[j] - mirror(node[i])||^2
+        if self._sym_weight > 0 and self._sym_pairs:
+            sym_penalty = 0.0
+            for sp in self._sym_pairs:
+                ax = sp['axis']
+                ctr = sp['center']
+                pairs = sp['pairs']  # (K, 2)
+
+                pos_i = nodes[pairs[:, 0]]  # (K, 3)
+                pos_j = nodes[pairs[:, 1]]  # (K, 3)
+
+                mirror_i = pos_i.copy()
+                mirror_i[:, ax] = 2 * ctr - mirror_i[:, ax]
+
+                diff = pos_j - mirror_i
+                sym_penalty += float(np.sum(diff ** 2))
+
+            n_total_pairs = sum(len(sp['pairs']) for sp in self._sym_pairs)
+            if n_total_pairs > 0:
+                sym_penalty /= n_total_pairs
+
+            total += self._sym_weight * sym_penalty
+
+        # Volume penalty: scaled relative to initial compliance so both terms
+        # are the same order of magnitude.  penalty = vol_weight * C_ref * vol_err^2
+        if self._vol_weight > 0 and self._target_vol > 0:
+            lengths = np.linalg.norm(
+                nodes[self.edges[:, 0]] - nodes[self.edges[:, 1]], axis=1)
+            beam_vol = float(np.sum(np.pi * self.radii**2 * lengths))
+            current_vol = beam_vol + self._plate_vol_fixed
+            vol_err = (current_vol - self._target_vol) / self._target_vol
+            # Scale by reference compliance (set on first call) so penalty
+            # magnitude is comparable to compliance regardless of problem size
+            if not hasattr(self, '_c_ref') or self._c_ref is None:
+                self._c_ref = max(abs(compliance), 1e-12)
+            total += self._vol_weight * self._c_ref * vol_err**2
+
+        return total
 
     def _unpack_ctrl_pts(self, cp_flat, nodes):
         """Reconstruct ctrl_pts list from flat vector, applying sanitization."""
@@ -184,7 +298,9 @@ class LayoutOptimizer:
 def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
                     visualize=False, target_volume_abs=None, snap_dist=2.0,
                     design_bounds=None, node_tags=None, ctrl_pts=None,
-                    ctrl_move_limit=None):
+                    ctrl_move_limit=None, geo_reg=0.0,
+                    plates=None, plate_thicknesses=None,
+                    sym_data=None, vol_weight=10.0):
     """Optimise node positions to minimise frame compliance (L-BFGS-B).
 
     Free node positions are updated by ``scipy.optimize.minimize`` with
@@ -216,6 +332,11 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
             interior Bézier control points per step, mm.  Defaults to
             ``0.3 * move_limit`` when ``ctrl_pts`` is not None.  Use a
             smaller value (e.g. 1.0) to prevent extreme curvature.
+        geo_reg (float): Geometric regularization weight.  The objective
+            becomes ``C_compliance + geo_reg * mean(||node - node_ref||²)``
+            where ``node_ref`` is the initial skeleton position.  Penalizes
+            drift from the original TO topology.  0.0 = off (default).
+            Typical range: 0.01–1.0 relative to compliance scale.
 
     Returns:
         tuple:
@@ -229,7 +350,12 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
             - **c_initial** (``float``): Compliance before optimisation.
             - **c_final** (``float``): Compliance after optimisation.
     """
-    optimizer = LayoutOptimizer(nodes, edges, radii, problem, E, ctrl_pts=ctrl_pts)
+    optimizer = LayoutOptimizer(nodes, edges, radii, problem, E, ctrl_pts=ctrl_pts,
+                                geo_reg=geo_reg, plates=plates,
+                                plate_thicknesses=plate_thicknesses,
+                                sym_data=sym_data,
+                                vol_weight=vol_weight,
+                                target_volume=target_volume_abs)
     use_curved = ctrl_pts is not None
     if ctrl_move_limit is None:
         ctrl_move_limit = move_limit * 0.3
@@ -268,6 +394,15 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
         domain_min = None
         domain_max = None
     
+    # On-plane symmetry constraints: lock across-plane coordinate to center
+    on_plane_overrides = {}  # {node_idx: {axis: value}}
+    if sym_data is not None and optimizer._sym_node_info is not None:
+        from src.optimization.symmetry import get_on_plane_bound_overrides
+        on_plane_overrides = get_on_plane_bound_overrides(
+            nodes, optimizer._sym_node_info, sym_data['planes'])
+        if on_plane_overrides:
+            print(f"[Layout] Symmetry: {len(on_plane_overrides)} on-plane node(s) constrained")
+
     for i in range(len(nodes)):
         if i in locked_nodes:
             # Fixed or Loaded Node - constrain to initial position
@@ -279,18 +414,18 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
             # Free Node
             c = nodes[i]
             r = node_max_radii[i]  # Max radius of connected edges
-            
+
             # Start with move_limit bounds
             b_min = [c[0] - move_limit, c[1] - move_limit, c[2] - move_limit]
             b_max = [c[0] + move_limit, c[1] + move_limit, c[2] + move_limit]
-            
+
             # Apply design domain bounds (accounting for beam radius)
             if domain_min is not None:
                 for axis in range(3):
                     # Node center must be at least r away from domain boundary
                     # so the cylinder doesn't exceed the design envelope
                     domain_width = domain_max[axis] - domain_min[axis]
-                    
+
                     if domain_width < 2 * r:
                         # Domain too thin for this beam - clamp to center
                         center = (domain_min[axis] + domain_max[axis]) / 2.0
@@ -299,13 +434,19 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
                     else:
                         b_min[axis] = max(b_min[axis], domain_min[axis] + r)
                         b_max[axis] = min(b_max[axis], domain_max[axis] - r)
-                    
+
                     # Final safety: ensure min <= max
                     if b_min[axis] > b_max[axis]:
                         mid = (b_min[axis] + b_max[axis]) / 2.0
                         b_min[axis] = mid
                         b_max[axis] = mid
-            
+
+            # Override bounds for on-plane symmetry nodes
+            if i in on_plane_overrides:
+                for axis, val in on_plane_overrides[i].items():
+                    b_min[axis] = val
+                    b_max[axis] = val
+
             bounds.append((b_min[0], b_max[0]))
             bounds.append((b_min[1], b_max[1]))
             bounds.append((b_min[2], b_max[2]))
@@ -325,7 +466,8 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
     print(f"[Layout] Starting L-BFGS-B Optimization on {len(x0)} variables "
           f"({len(x0) - len(nodes)*3} ctrl_pt DOFs)...")
     print(f"[Layout] Move Limit: +/- {move_limit} mm"
-          + (f", Ctrl Pt Limit: +/- {ctrl_move_limit:.2f} mm" if use_curved else ""))
+          + (f", Ctrl Pt Limit: +/- {ctrl_move_limit:.2f} mm" if use_curved else "")
+          + (f", Geo Reg: {geo_reg:.4f}" if geo_reg > 0 else ""))
     
     if visualize:
          # Show Initial
@@ -334,27 +476,41 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
          graph_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
          show_step("Initial Layout", load_geoms + graph_geoms)
          
-    # Callback
+    # Callback — record per-iteration pure compliance (not total objective)
+    layout_history = []
     def callback(xk):
-        c = optimizer.objective(xk)
-        print(f"   Iter: Compliance = {c:.4f}")
-        
-    # Initial Compliance
-    c_init = optimizer.objective(x0)
-    print(f"[Layout] Initial Compliance: {c_init:.4f}")
-    
+        optimizer.objective(xk)  # updates _last_compliance
+        layout_history.append(float(optimizer._last_compliance))
+
+    # Initial Compliance (pure FEM, no penalties)
+    obj_init = optimizer.objective(x0)
+    c_init = float(optimizer._last_compliance)
+    print(f"[Layout] Initial Compliance: {c_init:.6e}  (total objective: {obj_init:.6e})")
+    layout_history.append(c_init)
+
     if np.isnan(c_init):
         print("[ERROR] Beam Graph is singular or disconnected (NaN Compliance). Skipping Layout Optimization.")
-        return nodes, edges, radii, node_tags, c_init, c_init
-        
+        return nodes, edges, radii, node_tags, c_init, c_init, layout_history
+
     # Optimization
-    res = minimize(optimizer.objective, x0, method='L-BFGS-B', bounds=bounds, 
+    res = minimize(optimizer.objective, x0, method='L-BFGS-B', bounds=bounds,
                    options={'disp': True, 'maxiter': 50, 'eps': 1e-4}, # epsilon step for FD
-                   callback=None) 
+                   callback=callback)
                    
-    print(f"[Layout] Done. Final Compliance: {res.fun:.4f}")
-    
+    # Evaluate pure compliance at the final point
+    optimizer.objective(res.x)  # updates _last_compliance
+    c_final = float(optimizer._last_compliance)
+    print(f"[Layout] Done. Final Compliance: {c_final:.6e}  (total objective: {res.fun:.6e})")
+
     nodes_new = res.x[:len(nodes) * 3].reshape(nodes.shape)
+
+    # Exact symmetry enforcement (project onto symmetric manifold)
+    if sym_data is not None and optimizer._sym_node_info is not None:
+        from src.optimization.symmetry import enforce_exact_node_symmetry
+        nodes_new = enforce_exact_node_symmetry(
+            nodes_new, optimizer._sym_node_info, sym_data['planes'],
+            locked_nodes=optimizer.locked_node_indices)
+        print(f"[Layout] Symmetry: Enforced exact node symmetry")
 
     # Recover optimised ctrl_pts from the design vector
     ctrl_pts_opt = None
@@ -363,7 +519,7 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
         ctrl_pts_opt = optimizer._unpack_ctrl_pts(cp_flat, nodes_new)
 
     # --- Final Report ---
-    generate_report(c_init, res.fun, nodes, nodes_new, edges, radii, getattr(res, 'nit', 0), res.message, target_volume_abs=target_volume_abs)
+    generate_report(c_init, c_final, nodes, nodes_new, edges, radii, getattr(res, 'nit', 0), res.message, target_volume_abs=target_volume_abs)
     # --------------------
 
     if visualize:
@@ -379,15 +535,18 @@ def optimize_layout(nodes, edges, radii, problem, E=1000.0, move_limit=5.0,
         locked_nodes=optimizer.locked_node_indices,
         node_tags=node_tags, ctrl_pts=ctrl_pts_opt)
 
+    # Append final pure compliance to history
+    layout_history.append(c_final)
+
     if len(nodes_clean) < len(nodes_new):
         print(f"[Layout] Snapped! Nodes reduced from {len(nodes_new)} to {len(nodes_clean)}")
         if use_curved:
-            return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, res.fun, cp_clean
-        return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, res.fun
+            return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, c_final, cp_clean, layout_history
+        return nodes_clean, edges_clean, radii_clean, tags_clean, c_init, c_final, layout_history
     else:
         if use_curved:
-            return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, res.fun, ctrl_pts_opt
-        return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, res.fun
+            return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, c_final, ctrl_pts_opt, layout_history
+        return nodes_new, edges, radii, node_tags if node_tags else {}, c_init, c_final, layout_history
 
 def snap_nodes(nodes, edges, radii, tol, locked_nodes=None, node_tags=None,
                ctrl_pts=None):

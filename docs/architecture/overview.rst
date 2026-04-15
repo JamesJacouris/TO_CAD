@@ -20,10 +20,11 @@ Repository layout
    │
    ├── src/
    │   ├── optimization/
-   │   │   ├── top3d.py           # Python Top3D solver
-   │   │   ├── fem.py             # 3-D Euler-Bernoulli FEA
+   │   │   ├── top3d.py           # Python Top3D solver (SIMP + OC)
+   │   │   ├── fem.py             # 3-D frame FEA (straight + curved elements)
    │   │   ├── size_opt.py        # Optimality-Criteria radius sizing
-   │   │   └── layout_opt.py      # L-BFGS-B node-position optimisation
+   │   │   ├── layout_opt.py      # L-BFGS-B node-position optimisation
+   │   │   └── symmetry.py        # Mirror-half skeleton symmetry enforcement
    │   │
    │   ├── pipelines/
    │   │   └── baseline_yin/
@@ -37,6 +38,9 @@ Repository layout
    │   │       ├── surface_fitting.py  # B-spline plate mid-surfaces
    │   │       └── visualization.py    # Open3D / Matplotlib visualisation
    │   │
+   │   ├── mesh_import/
+   │   │   └── mesh_voxelizer.py  # External STL/OBJ → voxel grid (trimesh)
+   │   │
    │   ├── problems/
    │   │   ├── __init__.py        # load_problem_config() factory
    │   │   ├── cantilever.py
@@ -44,10 +48,10 @@ Repository layout
    │   │   └── generic.py
    │   │
    │   ├── curves/
-   │   │   └── spline.py          # Cubic Bézier fitting & sampling
+   │   │   └── spline.py          # Cubic Bézier fitting, sampling & sanitisation
    │   │
    │   ├── export/
-   │   │   └── freecad_reconstruct.py  # FreeCAD macro
+   │   │   └── freecad_reconstruct.py  # FreeCAD macro (beams, plates, fused body)
    │   │
    │   └── tuning/
    │       ├── pipeline_runner.py  # Subprocess wrapper for trials
@@ -88,6 +92,13 @@ Module dependency graph
        size_opt    [label="optimization.size_opt"];
        layout_opt  [label="optimization.layout_opt"];
        fem         [label="optimization.fem"];
+       symmetry    [label="optimization.symmetry", fillcolor="#fff0e0"];
+
+       // Curves
+       spline      [label="curves.spline"];
+
+       // Mesh import
+       mesh_vox    [label="mesh_import.mesh_voxelizer", fillcolor="#fff0e0"];
 
        // Problems
        problems    [label="problems\n(load_problem_config)"];
@@ -95,6 +106,7 @@ Module dependency graph
        // Edges
        run_pipeline -> run_top3d;
        run_top3d    -> top3d;
+       run_pipeline -> mesh_vox [style=dashed, label="--mesh_input"];
        run_pipeline -> reconstruct;
        reconstruct  -> thinning;
        thinning     -> topology;
@@ -108,6 +120,8 @@ Module dependency graph
        run_pipeline -> layout_opt;
        size_opt     -> fem;
        layout_opt   -> fem;
+       layout_opt   -> spline [style=dashed, label="--curved"];
+       run_pipeline -> symmetry [style=dashed, label="--symmetry"];
        run_pipeline -> problems;
        size_opt     -> problems;
        layout_opt   -> problems;
@@ -116,10 +130,12 @@ Module dependency graph
 Design decisions
 -----------------
 
-**Classify before thinning** (hybrid mode)
+**Classify after thinning** (hybrid mode)
    Zone classification is applied *after* a single hybrid thinning pass
-   (``mode=3``), not to the original solid.  This avoids the ambiguity of
-   classifying thick solid blobs.
+   (``mode=3``), not to the original solid.  A two-signal approach combines
+   skeleton set-difference (mode 3 minus mode 0) with octant plane pattern
+   counting to separate plate voxels from beam voxels without user-tuned
+   thresholds.
 
 **Separate JSON edge format** ``[u, v, r]``
    All JSON edge lists use exactly three elements: node index ``u``, node
@@ -131,7 +147,22 @@ Design decisions
    Python-callable API.  ``run_pipeline.py`` calls it directly (no subprocess)
    so exceptions propagate cleanly and there is no argument serialisation cost.
 
-**FEM uses straight beams always**
-   Even when ``--curved`` is specified, finite-element analysis always uses
-   straight Euler-Bernoulli elements.  Bézier curves are purely geometric /
-   visualisation output; they do not influence structural results.
+**Dual FEM element library**
+   The default structural model uses 12-DOF straight Euler–Bernoulli beam
+   elements.  When ``--curved`` is specified, an IGA Timoshenko curved-beam
+   element with cubic Bernstein shape functions is available; interior DOFs
+   are statically condensed to a 12-DOF interface so that curved and straight
+   elements can be mixed freely in the same assembly.  Straight elements
+   remain the default because short skeleton edges (1–5 voxels) can produce
+   ill-conditioned curved sub-elements.
+
+**Shared beam–plate volume budget**
+   In hybrid mode, beam radii and plate thicknesses are co-optimised under a
+   single volume constraint via the Optimality Criteria update.  This prevents
+   plates from consuming disproportionate material at the expense of beams.
+
+**Symmetry by mirror-half skeleton**
+   When ``--symmetry`` is given, the skeleton is split at the symmetry plane,
+   one half is optimised, and the result is reflected back.  Edges crossing
+   the plane are split at the intersection so that node positions on the plane
+   remain fixed during layout optimisation.

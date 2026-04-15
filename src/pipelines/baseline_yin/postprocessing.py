@@ -10,10 +10,89 @@ Key functions
 - :func:`collapse_short_edges` — merge nodes connected by very short edges
 - :func:`compute_edge_radii` — per-edge radius from EDT
 - :func:`compute_uniform_radii` — volume-matching uniform radius
+- :func:`classify_edge_curvature` — per-edge straight/curved classification
 - :func:`ensure_nodes_at_bounding_extrema` — guarantee nodes at domain corners
 """
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
+
+
+def _point_to_line_distance(point, line_start, line_end):
+    """Compute perpendicular distance from a point to a line segment."""
+    v = line_end - line_start
+    w = point - line_start
+    c1 = np.dot(w, v)
+    if c1 <= 0:
+        return np.linalg.norm(w)
+    c2 = np.dot(v, v)
+    if c1 >= c2:
+        return np.linalg.norm(point - line_end)
+    b = c1 / c2
+    proj = line_start + b * v
+    return np.linalg.norm(point - proj)
+
+
+def classify_edge_curvature(p_start, p_end, intermediate_pts, pitch=1.0,
+                             deviation_thresh=None):
+    """Decide whether a skeleton edge warrants curved Bézier representation.
+
+    Computes max perpendicular deviation of intermediate skeleton waypoints
+    from the straight chord line.  Edges whose deviation is below the
+    threshold are classified as straight.
+
+    Parameters
+    ----------
+    p_start, p_end : array-like, shape (3,)
+        Edge endpoint coordinates (mm).
+    intermediate_pts : list of array-like
+        Skeleton polyline waypoints between the endpoints.
+    pitch : float
+        Voxel pitch (mm).  Used to set default threshold.
+    deviation_thresh : float or None
+        Max perpendicular deviation threshold (mm).  Edges below this are
+        straight.  If None, defaults to ``0.3 * pitch``.
+
+    Returns
+    -------
+    dict with keys:
+        'is_curved'      : bool
+        'max_deviation'   : float  (mm)
+        'arc_ratio'       : float  (polyline_length / chord_length)
+        'n_waypoints'     : int
+    """
+    if deviation_thresh is None:
+        deviation_thresh = 0.3 * pitch
+
+    p0 = np.asarray(p_start, dtype=float)
+    p1 = np.asarray(p_end, dtype=float)
+    chord_len = float(np.linalg.norm(p1 - p0))
+
+    if len(intermediate_pts) == 0 or chord_len < 1e-12:
+        return {
+            'is_curved': False,
+            'max_deviation': 0.0,
+            'arc_ratio': 1.0,
+            'n_waypoints': 0,
+        }
+
+    pts = [np.asarray(p, dtype=float) for p in intermediate_pts]
+
+    # Max perpendicular deviation from chord
+    max_dev = max(_point_to_line_distance(p, p0, p1) for p in pts)
+
+    # Arc-length ratio
+    full_path = [p0] + pts + [p1]
+    arc_len = sum(np.linalg.norm(full_path[i + 1] - full_path[i])
+                  for i in range(len(full_path) - 1))
+    arc_ratio = arc_len / chord_len
+
+    return {
+        'is_curved': max_dev >= deviation_thresh,
+        'max_deviation': float(max_dev),
+        'arc_ratio': float(arc_ratio),
+        'n_waypoints': len(pts),
+    }
+
 
 def clean_edge_polylines(nodes_dict, edges):
     """
@@ -23,20 +102,6 @@ def clean_edge_polylines(nodes_dict, edges):
     nodes_dict: {id: [x, y, z]}
     edges: list of [u, v, w, pts, rad...]
     """
-    def point_to_line_distance(point, line_start, line_end):
-        """Compute perpendicular distance from point to line segment."""
-        v = line_end - line_start
-        w = point - line_start
-        c1 = np.dot(w, v)
-        if c1 <= 0:
-            return np.linalg.norm(w)
-        c2 = np.dot(v, v)
-        if c1 >= c2:
-            return np.linalg.norm(point - line_end)
-        b = c1 / c2
-        proj = line_start + b * v
-        return np.linalg.norm(point - proj)
-
     cleaned_edges = []
     max_perpendicular_error = 3.0  # Remove intermediate points >3mm from edge line
 
@@ -57,7 +122,7 @@ def clean_edge_polylines(nodes_dict, edges):
         filtered_pts = []
         for pt in pts:
             pt_arr = np.array(pt, dtype=float)
-            perp_error = point_to_line_distance(pt_arr, p_start, p_end)
+            perp_error = _point_to_line_distance(pt_arr, p_start, p_end)
 
             # Keep only points that are close to the edge line
             if perp_error <= max_perpendicular_error:
@@ -169,6 +234,9 @@ def recheck_graph(nodes, edges, node_tags=None):
     """
     if node_tags is None: node_tags = {}
 
+    # 0. Filter stale edges referencing deleted nodes
+    edges = [e for e in edges if e[0] in nodes and e[1] in nodes]
+
     # 1. Deduplicate Edges
     # Map (u,v) -> (min_weight, best_intermediates)
     unique_edges = {}
@@ -222,10 +290,13 @@ def recheck_graph(nodes, edges, node_tags=None):
         
         for u, conns in node_connections.items():
             if len(conns) == 2:
+                # Skip nodes not in nodes dict (stale edge reference)
+                if u not in nodes:
+                    continue
                 # CRITICAL FIX: Don't remove if Tagged!
                 if u in node_tags:
                     continue
-                    
+
                 target_node = u
                 break
                 
@@ -279,24 +350,22 @@ def collapse_short_edges(nodes, edges, threshold, node_tags=None):
     """
     if node_tags is None:
         node_tags = {}
-        
+
     changed = True
     while changed:
         changed = False
-        
+
         for i, (u, v, w, pts) in enumerate(edges):
             if w < threshold:
                 # Determine which node to keep
                 u_tagged = u in node_tags
                 v_tagged = v in node_tags
-                
+
                 if u_tagged and v_tagged:
-                    if node_tags[u] != node_tags[v]:
-                        # Different tags (e.g. Fixed vs Loaded) — don't collapse
-                        continue
-                    else:
-                        # Same tags — okay to collapse
-                        keep, remove = u, v
+                    # Never collapse an edge between two tagged nodes.
+                    # This prevents cascade-collapse of tag=2 load rings
+                    # and preserves spatial separation between BC nodes.
+                    continue
                 elif v_tagged:
                     # Keep v, remove u
                     keep, remove = v, u
@@ -311,15 +380,19 @@ def collapse_short_edges(nodes, edges, threshold, node_tags=None):
                     nodes[keep] = (p1 + p2) * 0.5
                 
                 # Remap all edges connected to 'remove' -> 'keep'
+                # Recalculate weights using actual node positions to prevent
+                # stale weights from causing cascade collapses after centroid merge
                 new_edges = []
                 for j, e in enumerate(edges):
                     eu, ev, ew, epts = e[0], e[1], e[2], e[3] if len(e)>3 else []
-                    
+
                     if eu == remove: eu = keep
                     if ev == remove: ev = keep
-                    
+
                     if eu == ev: continue  # Remove Self Loop
-                    
+
+                    # Recalculate weight as Euclidean distance between current positions
+                    ew = float(np.linalg.norm(np.array(nodes[eu]) - np.array(nodes[ev])))
                     new_edges.append([eu, ev, ew, epts])
                 
                 edges = new_edges
@@ -375,6 +448,267 @@ def prune_branches(nodes, edges, min_len=0.0, node_tags=None):
             nodes, edges = recheck_graph(nodes, edges, node_tags)
             
     return nodes, edges
+
+# ----------------------------------------------------------------------------
+# Algorithm 4.6: Reconnect Disconnected Components (Structural Cleanup)
+# ----------------------------------------------------------------------------
+def remove_disconnected_components(nodes, edges, node_tags=None):
+    """
+    Reconnects disconnected components to the main graph (the component
+    containing fixed nodes, tag=1).  For each orphan component, finds the
+    closest node-pair to the main component and adds a bridge edge.
+    Tiny components (≤2 nodes, no tags) are removed instead of bridged.
+    """
+    from collections import defaultdict, deque
+
+    if node_tags is None:
+        node_tags = {}
+
+    adj = defaultdict(set)
+    for e in edges:
+        adj[e[0]].add(e[1])
+        adj[e[1]].add(e[0])
+
+    visited = set()
+    components = []
+    for nid in sorted(nodes):
+        if nid not in visited:
+            comp = set()
+            q = deque([nid])
+            while q:
+                n = q.popleft()
+                if n in visited:
+                    continue
+                visited.add(n)
+                comp.add(n)
+                for nb in adj[n]:
+                    if nb not in visited:
+                        q.append(nb)
+            components.append(comp)
+
+    if len(components) <= 1:
+        return nodes, edges
+
+    # Identify main component (the one with fixed nodes)
+    main_comp = None
+    orphan_comps = []
+    for comp in components:
+        has_fixed = any(node_tags.get(n) == 1 for n in comp)
+        if has_fixed:
+            if main_comp is None or len(comp) > len(main_comp):
+                if main_comp is not None:
+                    orphan_comps.append(main_comp)
+                main_comp = comp
+            else:
+                orphan_comps.append(comp)
+        else:
+            orphan_comps.append(comp)
+
+    if main_comp is None or not orphan_comps:
+        return nodes, edges
+
+    print(f"  [Cleanup] {len(components)} components: main={len(main_comp)} nodes, "
+          f"{len(orphan_comps)} orphan(s)")
+
+    # For each orphan component: bridge to main graph
+    remove_nodes = set()
+    for comp in orphan_comps:
+        has_edges = any(e for e in edges if e[0] in comp or e[1] in comp)
+
+        # Isolated nodes with no edges and no tags: remove
+        if len(comp) == 1 and not has_edges and not any(n in node_tags for n in comp):
+            remove_nodes.update(comp)
+            continue
+
+        # Find closest node pair between orphan and main component
+        best_dist = float('inf')
+        best_orphan = None
+        best_main = None
+        orphan_coords = np.array([nodes[n] for n in comp])
+        orphan_ids = list(comp)
+        for mn in main_comp:
+            mc = np.array(nodes[mn])
+            dists = np.linalg.norm(orphan_coords - mc, axis=1)
+            idx = np.argmin(dists)
+            if dists[idx] < best_dist:
+                best_dist = dists[idx]
+                best_orphan = orphan_ids[idx]
+                best_main = mn
+
+        # If nodes are co-located (dist < 0.5mm), MERGE instead of bridging
+        # to avoid zero-length edges that cause singular FEM matrices.
+        MERGE_THRESH = 0.5
+        if best_dist < MERGE_THRESH:
+            # Redirect all edges from best_orphan to best_main
+            for e in edges:
+                if e[0] == best_orphan:
+                    e[0] = best_main
+                if e[1] == best_orphan:
+                    e[1] = best_main
+            # Redirect all edges from other orphan nodes to their closest main
+            # equivalent if needed (for multi-node orphans, merge all close nodes)
+            for on in comp:
+                if on == best_orphan:
+                    continue
+                oc = np.array(nodes[on])
+                # Find closest main node for this orphan node
+                d_to_main = float('inf')
+                closest_main = best_main
+                for mn in main_comp:
+                    d = np.linalg.norm(oc - np.array(nodes[mn]))
+                    if d < d_to_main:
+                        d_to_main = d
+                        closest_main = mn
+                if d_to_main < MERGE_THRESH:
+                    for e in edges:
+                        if e[0] == on:
+                            e[0] = closest_main
+                        if e[1] == on:
+                            e[1] = closest_main
+                    remove_nodes.add(on)
+            # Transfer tags and remove the merged node
+            if best_orphan in node_tags and best_orphan not in [1, 2]:
+                pass  # Don't transfer bridge tags
+            remove_nodes.add(best_orphan)
+            main_comp.update(comp)
+            print(f"  [Cleanup] Merged {len(comp)}-node component: "
+                  f"node {best_orphan} -> node {best_main} (dist={best_dist:.1f})")
+        else:
+            # Add bridge edge and tag the orphan endpoint to prevent pruning
+            edges.append([best_orphan, best_main, best_dist, []])
+            # Tag=9 (bridge) makes this node immune to pruning but ignored by TaggedProblem
+            if best_orphan not in node_tags:
+                node_tags[best_orphan] = 9
+            main_comp.update(comp)  # Merge into main for subsequent orphans
+            print(f"  [Cleanup] Bridged {len(comp)}-node component: "
+                  f"node {best_orphan} -> node {best_main} (dist={best_dist:.1f})")
+
+    if remove_nodes:
+        nodes = {k: v for k, v in nodes.items() if k not in remove_nodes}
+        edges = [e for e in edges if e[0] not in remove_nodes and e[1] not in remove_nodes]
+        for n in remove_nodes:
+            node_tags.pop(n, None)
+
+    # Remove self-loops and duplicate edges created by merging
+    seen = set()
+    clean_edges = []
+    for e in edges:
+        if e[0] == e[1]:
+            continue  # Self-loop
+        key = (min(e[0], e[1]), max(e[0], e[1]))
+        if key in seen:
+            continue  # Duplicate
+        seen.add(key)
+        clean_edges.append(e)
+    if len(clean_edges) < len(edges):
+        n_removed = len(edges) - len(clean_edges)
+        print(f"  [Cleanup] Removed {n_removed} self-loop/duplicate edges after merging")
+    edges.clear()
+    edges.extend(clean_edges)
+
+    return nodes, edges
+
+
+# ----------------------------------------------------------------------------
+# Algorithm 4.7: Merge Co-located Nodes (Zero-Length Edge Elimination)
+# ----------------------------------------------------------------------------
+def merge_colocated_nodes(nodes, edges, node_tags=None, tol=0.1):
+    """
+    Merges nodes closer than ``tol`` mm to eliminate zero-length edges
+    that cause singular FEM stiffness matrices.  Preserves tagged nodes
+    (tag 1/2) as merge targets when possible.
+    """
+    if node_tags is None:
+        node_tags = {}
+
+    node_ids = sorted(nodes.keys())
+    if len(node_ids) < 2:
+        return nodes, edges
+
+    coords = np.array([nodes[n] for n in node_ids])
+    from scipy.spatial import cKDTree
+    tree = cKDTree(coords)
+    pairs = tree.query_pairs(tol)
+
+    if not pairs:
+        return nodes, edges
+
+    # Build merge map: for each pair, keep the node with a higher-priority tag
+    # Priority: tag 1 (fixed) > tag 2 (loaded) > tag 9 (bridge) > no tag
+    TAG_PRIORITY = {1: 3, 2: 2, 9: 1}
+    merge_map = {}  # old_id -> new_id
+
+    # Union-Find to handle transitive merges
+    parent = {nid: nid for nid in node_ids}
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        # Keep the one with better tag
+        pa = TAG_PRIORITY.get(node_tags.get(ra, 0), 0)
+        pb = TAG_PRIORITY.get(node_tags.get(rb, 0), 0)
+        if pa >= pb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    for i, j in pairs:
+        union(node_ids[i], node_ids[j])
+
+    # Build final merge map
+    removed = set()
+    for nid in node_ids:
+        root = find(nid)
+        if root != nid:
+            merge_map[nid] = root
+            removed.add(nid)
+
+    if not removed:
+        return nodes, edges
+
+    # Remap edges
+    for e in edges:
+        if e[0] in merge_map:
+            e[0] = merge_map[e[0]]
+        if e[1] in merge_map:
+            e[1] = merge_map[e[1]]
+
+    # Transfer tags from removed nodes to their merge targets
+    for old_id, new_id in merge_map.items():
+        if old_id in node_tags and new_id not in node_tags:
+            node_tags[new_id] = node_tags[old_id]
+        node_tags.pop(old_id, None)
+
+    # Remove merged nodes
+    nodes = {k: v for k, v in nodes.items() if k not in removed}
+
+    # Remove self-loops and duplicates
+    seen = set()
+    clean_edges = []
+    for e in edges:
+        if e[0] == e[1]:
+            continue
+        key = (min(e[0], e[1]), max(e[0], e[1]))
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_edges.append(e)
+
+    n_merged = len(removed)
+    n_edges_removed = len(edges) - len(clean_edges)
+    print(f"  [Post] Merged {n_merged} co-located nodes (tol={tol}mm), "
+          f"removed {n_edges_removed} degenerate edges")
+
+    edges.clear()
+    edges.extend(clean_edges)
+
+    return nodes, edges
+
 
 # ----------------------------------------------------------------------------
 # Geometric Simplification (Ramer-Douglas-Peucker)
@@ -449,6 +783,67 @@ def simplify_graph_geometry(nodes, edges, epsilon=1.0):
             edges[i] = [u, v, w, new_intermediates]
             
     return nodes, edges
+
+
+def smooth_graph_curves(nodes, edges, iterations=5, decimate_stride=1):
+    """Smooth edge waypoints using Laplacian smoothing for curved beam mode.
+
+    Applies iterative Laplacian smoothing to each edge's intermediate waypoints
+    to reduce voxel-grid noise while preserving overall curve shape.  Endpoints
+    (graph nodes) are never moved.
+
+    Optionally decimates waypoints after smoothing by keeping every Nth point
+    to reduce point count without significant shape loss.
+
+    Args:
+        nodes: Node dictionary ``{id: [x, y, z]}``.
+        edges: Edge list ``[[u, v, w, waypoints, ...], ...]``.
+        iterations: Number of Laplacian smoothing passes (default 5).
+        decimate_stride: Keep every Nth waypoint after smoothing (1=all).
+
+    Returns:
+        (nodes, edges) with smoothed (and optionally decimated) waypoints.
+    """
+    from src.pipelines.baseline_yin.graph import smooth_polyline
+
+    count_before = 0
+    count_after = 0
+
+    for i in range(len(edges)):
+        u, v, w = edges[i][0], edges[i][1], edges[i][2]
+        pts = edges[i][3] if len(edges[i]) > 3 else []
+
+        if len(pts) < 2:
+            continue
+
+        count_before += len(pts)
+
+        # Build full polyline with endpoints for context
+        p_start = list(nodes[u])
+        p_end = list(nodes[v])
+        full_chain = [p_start] + [list(p) for p in pts] + [p_end]
+        smoothed = smooth_polyline(full_chain, iterations=iterations)
+        # Strip endpoints back off
+        new_pts = smoothed[1:-1]
+
+        # Decimate: keep every Nth point
+        if decimate_stride > 1 and len(new_pts) > 2:
+            decimated = [new_pts[j] for j in range(0, len(new_pts), decimate_stride)]
+            # Always include the last waypoint if dropped
+            if (len(new_pts) - 1) % decimate_stride != 0:
+                decimated.append(new_pts[-1])
+            new_pts = decimated
+
+        count_after += len(new_pts)
+
+        # Rebuild edge preserving any fields beyond [3]
+        edges[i] = [u, v, w, new_pts] + list(edges[i][4:])
+
+    print(f"  [Smooth] {count_before} waypoints -> {count_after} waypoints "
+          f"({iterations} iters, stride={decimate_stride})")
+
+    return nodes, edges
+
 
 # ----------------------------------------------------------------------------
 # Radius Estimation

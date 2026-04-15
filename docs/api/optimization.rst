@@ -21,7 +21,9 @@ Pure-Python 3-D topology optimiser (SIMP + OC + mesh-independence filter).
 fem
 ---
 
-3-D Euler-Bernoulli frame finite element analysis.
+3-D frame FEA with straight Euler–Bernoulli and curved IGA Timoshenko beam
+elements.  Curved elements use cubic Bernstein shape functions with static
+condensation to a 12-DOF interface.
 
 .. automodule:: src.optimization.fem
    :members:
@@ -46,6 +48,17 @@ layout\_opt
 L-BFGS-B node position layout optimisation.
 
 .. automodule:: src.optimization.layout_opt
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: bysource
+
+symmetry
+--------
+
+Mirror-half skeleton symmetry enforcement for layout optimisation.
+
+.. automodule:: src.optimization.symmetry
    :members:
    :undoc-members:
    :show-inheritance:

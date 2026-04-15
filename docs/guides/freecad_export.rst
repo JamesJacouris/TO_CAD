@@ -10,11 +10,16 @@ Geometry created
 -----------------
 
 * **Beams** — swept circular tubes (one per edge), with hemispherical end caps
-  at every node.
+  at every node.  Beams are coloured with a radius heatmap (blue → green →
+  yellow → red) where blue = thinnest and red = thickest.
 * **Curved beams** — ``Part.BezierCurve`` piped through the cross-section
   circle (only when the JSON contains ``ctrl_pts`` entries).
 * **Plates** — polygon faces built from the plate vertex lists, or B-spline
-  surfaces when ``bspline_surface`` data is present.
+  surfaces when ``bspline_surface`` data is present.  Curved plates use
+  offset mid-surfaces along vertex normals.
+* **Fused body** — a single ``Fused_Body`` solid created by batched
+  ``multiFuse`` (groups of 30) and ``removeSplitter()`` of all beam and plate
+  shapes, suitable for direct STEP export.
 * **History timeline** — one FreeCAD group per pipeline stage so you can
   toggle visibility and compare before/after.
 * **Density legend** — for the initial-voxels stage, 10 coloured reference
@@ -64,7 +69,9 @@ Known limitations
 * Mid-surface plate geometry requires the Open3D mesh library, which is not
   available inside the FreeCAD Python interpreter.  Plates fall back to
   flat-face polygon meshes.
-* Complex CSG operations (Boolean union, shell offset) are intentionally
-  avoided for stability.  The output is a compound of individual solids.
+* The fused body uses per-beam Boolean unions and ``removeSplitter()``.  These
+  OCC operations can be slow for very large models (> 2000 beams) and may fail
+  on degenerate geometry; individual beams/plates are always available as a
+  fallback.
 * Very large models (> 5000 beams) may exceed FreeCAD's undo-history buffer;
   save before running.

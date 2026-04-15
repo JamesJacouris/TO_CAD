@@ -1,0 +1,141 @@
+% roof_problem_setup.tex — Roof Structure Problem Setup (40 × 40 × 20)
+%
+% Standalone preview:  pdflatex roof_problem_setup.tex
+% Dissertation usage:  \input{figures/roof_problem_setup}
+
+\documentclass[tikz,border=5mm]{standalone}
+\usepackage{tikz,tikz-3dplot}
+\usetikzlibrary{arrows.meta, calc}
+\usepackage{amsmath}
+
+\begin{document}
+
+\tdplotsetmaincoords{72}{130}
+
+\begin{tikzpicture}[tdplot_main_coords, scale=0.11]
+
+% ── Parameters ──────────────────────────────────────────────────────
+\def\NX{40}  \def\NY{40}  \def\NZ{20}
+\def\arrowlen{6}
+
+% ── Colours ─────────────────────────────────────────────────────────
+\definecolor{boxcol}{HTML}{2C3E50}
+\definecolor{backedge}{HTML}{B0BEC5}
+\definecolor{loadred}{HTML}{C0392B}
+\definecolor{fixblue}{HTML}{2471A3}
+\definecolor{loadfill}{HTML}{E74C3C}
+\definecolor{dimcol}{HTML}{78909C}
+
+% ====================================================================
+%  LAYER 1: BACK EDGES (dashed)
+% ====================================================================
+\draw[backedge, dashed, line width=0.3pt]
+  (0,\NY,0) -- (\NX,\NY,0) -- (\NX,\NY,\NZ)
+  (0,\NY,0) -- (0,\NY,\NZ) -- (\NX,\NY,\NZ)
+  (0,0,0) -- (0,\NY,0);
+
+% ====================================================================
+%  LAYER 2: SUPPORT MARKERS
+% ====================================================================
+\newcommand{\supportmarker}[2]{%
+  \fill[fixblue, opacity=0.9]
+    (#1,#2,0) -- ({#1-1.4},{#2},-2) -- ({#1+1.4},{#2},-2) -- cycle;
+  \draw[fixblue!65!black, line width=0.3pt]
+    (#1,#2,0) -- ({#1-1.4},{#2},-2) -- ({#1+1.4},{#2},-2) -- cycle;
+  \draw[fixblue!55!black, line width=0.4pt]
+    ({#1-2},{#2},-2) -- ({#1+2},{#2},-2);
+  \foreach \hx in {-1.2,-0.4,0.4,1.2} {
+    \draw[fixblue!30!black, line width=0.18pt]
+      ({#1+\hx},{#2},-2) -- ({#1+\hx-0.5},{#2},-2.8);
+  }
+}
+\supportmarker{1}{1}
+\supportmarker{39}{1}
+\supportmarker{1}{39}
+\supportmarker{39}{39}
+
+% ====================================================================
+%  LAYER 3: FRONT / VISIBLE BOX EDGES
+% ====================================================================
+\draw[boxcol, line width=0.8pt]
+  (0,0,0) -- (\NX,0,0) -- (\NX,0,\NZ) -- (0,0,\NZ) -- cycle;
+\draw[boxcol, line width=0.8pt]
+  (\NX,0,0) -- (\NX,\NY,0)
+  (\NX,0,\NZ) -- (\NX,\NY,\NZ)
+  (0,0,\NZ) -- (0,\NY,\NZ);
+
+% ====================================================================
+%  LAYER 4: TOP SURFACE FILL + LOAD ARROWS
+% ====================================================================
+\fill[loadfill, opacity=0.07]
+  (0,0,\NZ) -- (\NX,0,\NZ) -- (\NX,\NY,\NZ) -- (0,\NY,\NZ) -- cycle;
+
+\foreach \ix in {5,13,21,29,37} {
+  \foreach \iy in {5,13,21,29,37} {
+    \draw[-{Stealth[length=1.8pt, width=1.3pt]}, loadred, line width=0.4pt]
+      (\ix, \iy, \NZ+\arrowlen) -- (\ix, \iy, \NZ+0.5);
+  }
+}
+
+% ====================================================================
+%  LAYER 5: DIMENSION LINES (drawn ON TOP of all geometry)
+% ====================================================================
+% Three dimensions offset in three screen directions: RIGHT, UP, DOWN.
+
+\tikzset{
+  dimline/.style={dimcol, line width=0.28pt,
+    {Bar[width=0.7pt]}-{Bar[width=0.7pt]}},
+  dimext/.style={dimcol, line width=0.12pt},
+  dimlabel/.style={font=\scriptsize, dimcol, fill=white, inner sep=1.2pt},
+}
+
+% --- nz: front-left vertical (x=NX, y=0), offset x=+12 → screen LEFT ---
+% Placed on the opposite vertical edge to avoid front-face overlap.
+\draw[dimext] (\NX,0,0) -- (\NX+12,0,0);
+\draw[dimext] (\NX,0,\NZ) -- (\NX+12,0,\NZ);
+\draw[dimline] (\NX+12,0,0) -- (\NX+12,0,\NZ)
+  node[dimlabel, midway, left] {$n_z = 20$};
+
+% --- nx: top-front edge (y=0, z=NZ), offset z=+12 → screen UP (above arrows) ---
+\draw[dimext] (0,0,\NZ) -- (0,0,\NZ+12);
+\draw[dimext] (\NX,0,\NZ) -- (\NX,0,\NZ+12);
+\draw[dimline] (0,0,\NZ+12) -- (\NX,0,\NZ+12)
+  node[dimlabel, midway, above, sloped] {$n_x = 40$};
+
+% --- ny: front edge (x=0, y varies), offset z=-8 → screen DOWN (below box) ---
+\draw[dimext] (0,0,0) -- (0,0,-8);
+\draw[dimext] (0,\NY,0) -- (0,\NY,-8);
+\draw[dimline] (0,0,-8) -- (0,\NY,-8)
+  node[dimlabel, midway, below, sloped] {$n_y = 40$};
+
+% ====================================================================
+%  LAYER 6: COORDINATE TRIAD (drawn last in 3D, on top)
+% ====================================================================
+\def\triadlen{7}
+\coordinate (tO) at (-5,-35,0);
+\draw[-{Stealth[length=2pt]}, black!55, line width=0.4pt]
+  (tO) -- +(\triadlen,0,0) node[anchor=north, font=\tiny, inner sep=0.5pt] {$x$};
+\draw[-{Stealth[length=2pt]}, black!55, line width=0.4pt]
+  (tO) -- +(0,\triadlen,0) node[anchor=west, font=\tiny, inner sep=0.5pt] {$y$};
+\draw[-{Stealth[length=2pt]}, black!55, line width=0.4pt]
+  (tO) -- +(0,0,\triadlen) node[anchor=south east, font=\tiny, inner sep=0.5pt] {$z$};
+
+% ====================================================================
+%  LAYER 7: TEXT ANNOTATIONS (2D overlay, drawn last)
+% ====================================================================
+
+% Force label — top-right
+\node[loadred, font=\footnotesize, anchor=north west, align=left]
+  at ($(current bounding box.north east)+(-0.15,-0.1)$)
+  {$\boldsymbol{F} = -1.0\;\text{N}$ \\[-1pt]
+   {\scriptsize distributed on top face ($-z$)}};
+
+% Support label — bottom centre
+\node[fixblue, font=\scriptsize, anchor=north] at
+  ($(current bounding box.south)+(0,0.1)$)
+  {4 pinned supports at $z{=}0$
+   \enspace{\footnotesize$\bullet$}\enspace
+   1\,element inset from corners, all DOFs fixed};
+
+\end{tikzpicture}
+\end{document}

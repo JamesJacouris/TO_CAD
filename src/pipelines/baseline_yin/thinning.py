@@ -77,7 +77,9 @@ def find_candidates(volume, direction_idx, tags, mode=0, surface_mask=None, edt=
                         if is_surface_point_relaxed(hood): keep = True
                     if not keep and is_end_voxel(hood): keep = True
                 elif mode == 3: # Post-thinning hybrid: preserve BOTH
-                    if is_surface_point(hood): keep = True
+                    # Use relaxed surface test (≥6/8 octants) to handle
+                    # staircase-discretised curved surfaces on voxel grids.
+                    if is_surface_point_relaxed(hood, 6): keep = True
                     if not keep and is_end_voxel(hood): keep = True
 
                 if not keep and is_simple_point(hood): c += 1
@@ -109,13 +111,15 @@ def find_candidates(volume, direction_idx, tags, mode=0, surface_mask=None, edt=
                         if is_surface_point_relaxed(hood): keep = True
                     if not keep and is_end_voxel(hood): keep = True
                 elif mode == 3:
-                    if is_surface_point(hood): keep = True
+                    if is_surface_point_relaxed(hood, 6): keep = True
                     if not keep and is_end_voxel(hood): keep = True
 
                 if not keep and is_simple_point(hood):
                     candidates[ptr, 0], candidates[ptr, 1], candidates[ptr, 2] = z, y, x
                     ptr += 1
     return candidates
+
+
 
 @njit
 def sequential_delete(volume, candidates, iteration_map, current_iter, mode=0, surface_mask=None, edt=None, plate_threshold=3.0, boundary_mask=None):
@@ -136,7 +140,7 @@ def sequential_delete(volume, candidates, iteration_map, current_iter, mode=0, s
                 if is_surface_point_relaxed(hood): keep = True
             if not keep and is_end_voxel(hood): keep = True
         elif mode == 3:
-            if is_surface_point(hood): keep = True
+            if is_surface_point_relaxed(hood, 6): keep = True
             if not keep and is_end_voxel(hood): keep = True
 
         if not keep and is_simple_point(hood):

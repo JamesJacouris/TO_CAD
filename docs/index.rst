@@ -1,8 +1,9 @@
 TO_CAD Pipeline Documentation
 ==============================
 
-**TO_CAD** converts 3-D topology-optimised density fields into clean beam-and-plate
-CAD skeletons ready for FreeCAD.  The pipeline chains four stages:
+**TO_CAD** converts three-dimensional SIMP density fields into editable
+parametric CAD models (beams, plates, and fused solid bodies) ready for
+FreeCAD.  The pipeline chains four stages:
 
 .. list-table::
    :widths: 10 20 70
@@ -26,6 +27,10 @@ CAD skeletons ready for FreeCAD.  The pipeline chains four stages:
 
 The final JSON is imported into FreeCAD via
 :mod:`src.export.freecad_reconstruct`.
+
+Additional capabilities include curved Bézier beams (``--curved``), external
+mesh input from STL/OBJ files (``--mesh_input``), mirror-half symmetry
+enforcement (``--symmetry``), and a fused solid body for STEP export.
 
 .. toctree::
    :maxdepth: 1

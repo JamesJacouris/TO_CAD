@@ -1,0 +1,97 @@
+% frame_supported_beam_setup.tex — Frame-Supported Beam Problem Setup (40 × 40 × 20)
+%
+% Standalone preview:  pdflatex frame_supported_beam_setup.tex
+% Dissertation usage:  \input{figures/frame_supported_beam_setup}
+
+\documentclass[tikz,border=2mm]{standalone}
+\usepackage{tikz,tikz-3dplot}
+\usetikzlibrary{arrows.meta, calc}
+\usepackage{amsmath}
+
+\begin{document}
+
+\tdplotsetmaincoords{70}{125}
+
+\begin{tikzpicture}[tdplot_main_coords, scale=0.08]
+
+% ── Parameters ──────────────────────────────────────────────────────
+\def\NX{40}  \def\NY{40}  \def\NZ{20}
+\def\arrowlen{5}
+
+% ── Colours ─────────────────────────────────────────────────────────
+\definecolor{boxcol}{HTML}{2C3E50}
+\definecolor{backedge}{HTML}{9EAFBA}
+\definecolor{loadred}{HTML}{C0392B}
+\definecolor{fixblue}{HTML}{2471A3}
+\definecolor{loadfill}{HTML}{E74C3C}
+\definecolor{dimcol}{HTML}{607D8B}
+
+% ====================================================================
+%  BACK EDGES (dashed)
+% ====================================================================
+% Hidden edges: 3 edges meeting at far corner (0,NY,0)
+\draw[backedge, dashed, line width=1.8pt]
+  (0,0,0) -- (0,\NY,0)            % bottom depth left
+  (0,\NY,0) -- (\NX,\NY,0)        % back bottom
+  (0,\NY,0) -- (0,\NY,\NZ);       % back left vertical
+% Visible back edges (solid)
+\draw[boxcol, line width=3.0pt]
+  (\NX,\NY,0) -- (\NX,\NY,\NZ)
+  (0,\NY,\NZ) -- (\NX,\NY,\NZ);
+
+% ====================================================================
+%  SUPPORT MARKERS (4 corners, 1-element inset)
+% ====================================================================
+\newcommand{\supportmarker}[2]{%
+  \fill[fixblue]
+    (#1,#2,0) -- ({#1-1.8},{#2},-2.4) -- ({#1+1.8},{#2},-2.4) -- cycle;
+  \draw[fixblue!50!black, line width=2.0pt]
+    ({#1-2.4},{#2},-2.4) -- ({#1+2.4},{#2},-2.4);
+}
+\supportmarker{1}{1}
+\supportmarker{39}{1}
+\supportmarker{1}{39}
+\supportmarker{39}{39}
+
+% ====================================================================
+%  FRONT / VISIBLE BOX EDGES
+% ====================================================================
+\draw[boxcol, line width=3.0pt]
+  (0,0,0) -- (\NX,0,0) -- (\NX,0,\NZ) -- (0,0,\NZ) -- cycle;
+\draw[boxcol, line width=3.0pt]
+  (\NX,0,0) -- (\NX,\NY,0)
+  (\NX,0,\NZ) -- (\NX,\NY,\NZ)
+  (0,0,\NZ) -- (0,\NY,\NZ);
+
+% ====================================================================
+%  TOP SURFACE FILL + LOAD ARROWS
+% ====================================================================
+\fill[loadfill, opacity=0.08]
+  (0,0,\NZ) -- (\NX,0,\NZ) -- (\NX,\NY,\NZ) -- (0,\NY,\NZ) -- cycle;
+
+\foreach \ix in {7,20,33} {
+  \foreach \iy in {7,20,33} {
+    \draw[-{Stealth[length=5pt, width=4pt]}, loadred, line width=2.0pt]
+      (\ix, \iy, \NZ+\arrowlen) -- (\ix, \iy, \NZ+0.4);
+  }
+}
+
+% Force label — near top-right of surface, above rightmost arrow
+\node[loadred, font=\normalsize\bfseries, fill=white, inner sep=0.6pt,
+      anchor=south] at (33, 7, \NZ+\arrowlen+0.5) {$F_z{=}{-}5\;\text{N}$};
+
+% ====================================================================
+%  DIMENSION LABELS (anchored on 3D edges, screen-shifted outward)
+% ====================================================================
+% nx=40: above top-front edge
+\node[dimcol, font=\normalsize\bfseries, fill=white, inner sep=0.6pt,
+      yshift=3mm] at (20, 0, \NZ+\arrowlen+1) {$n_x{=}40$};
+% ny=40: along bottom-depth edge
+\node[dimcol, font=\normalsize\bfseries, fill=white, inner sep=0.6pt,
+      yshift=-2mm] at (20, \NY, -3) {$n_y{=}40$};
+% nz=20: left of front-left edge (\NX,0 is screen-left)
+\node[dimcol, font=\normalsize\bfseries, fill=white, inner sep=0.6pt,
+      anchor=east, xshift=-3mm] at (\NX, 0, 10) {$n_z{=}20$};
+
+\end{tikzpicture}
+\end{document}

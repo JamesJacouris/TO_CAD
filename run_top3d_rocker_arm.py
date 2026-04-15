@@ -271,7 +271,7 @@ def main():
     # 5. Run optimisation
     # ------------------------------------------------------------------ #
     print()
-    xPhys = solver.optimize(max_loop=args.max_loop)
+    xPhys, compliance_history = solver.optimize(max_loop=args.max_loop)
 
     # ------------------------------------------------------------------ #
     # 6. Save

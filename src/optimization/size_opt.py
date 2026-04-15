@@ -20,6 +20,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 from src.pipelines.baseline_yin.visualization import viz_graph_radii, viz_loads, show_step
 from src.optimization.fem import (solve_frame,
                                   compute_frame_gradients as compute_sensitivities,
+                                  compute_shell_thickness_gradients,
                                   solve_curved_frame,
                                   compute_curved_size_gradients)
 from src.curves.spline import bezier_arc_length
@@ -90,46 +91,92 @@ def optimality_criteria_update(radii, sensitivities, lengths, vol_frac, target_v
         
     return r_new
 
+def _compute_plate_areas(plates):
+    """Compute total mid-surface area per plate for volume = area * thickness."""
+    from src.optimization.fem import _get_plate_mid_surface
+    areas = []
+    for plate in plates:
+        ms = _get_plate_mid_surface(plate)
+        if ms is None:
+            areas.append(0.0)
+            continue
+        verts = np.array(ms["vertices"])
+        tris = ms["triangles"]
+        total_area = 0.0
+        for tri in tris:
+            i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+            if max(i0, i1, i2) >= len(verts):
+                continue
+            e1 = verts[i1] - verts[i0]
+            e2 = verts[i2] - verts[i0]
+            total_area += 0.5 * np.linalg.norm(np.cross(e1, e2))
+        areas.append(total_area)
+    return np.array(areas)
+
+
 def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1.0,
                   max_iter=50, visualize=False, target_volume_abs=None,
-                  ctrl_pts=None, r_min=0.1, r_max=5.0):
-    """Optimise beam cross-section radii to minimise compliance at fixed volume.
+                  ctrl_pts=None, r_min=0.1, r_max=5.0,
+                  plates=None, h_min=0.1, h_max=10.0,
+                  sym_data=None):
+    """Optimise beam radii (and optionally plate thicknesses) to minimise compliance.
 
-    Applies the Optimality Criteria (OC) update rule::
+    When ``plates`` is provided, shell elements are assembled alongside beams
+    and plate thicknesses are co-optimised using the OC update rule.
 
-        r_new = clip(r_old * (−∂C/∂r / (λ ∂V/∂r))^η,
-                     r_min, r_max)
+    Parameters
+    ----------
+    nodes : ndarray
+        Node positions, shape (N, 3).
+    edges : ndarray
+        Edge connectivity, shape (M, 2).
+    initial_radii : ndarray
+        Starting beam radii, shape (M,).
+    problem : object
+        BC problem config (provides loads and fixed DOFs).
+    E : float
+        Young's modulus (default 1000.0).
+    vol_fraction : float
+        Target volume as fraction of initial volume.
+    max_iter : int
+        Maximum OC iterations (default 50).
+    visualize : bool
+        Open interactive visualisation windows.
+    target_volume_abs : float or None
+        Absolute target volume; overrides ``vol_fraction`` if given.
+    ctrl_pts : list or None
+        Bézier control points per edge (curved mode).
+    r_min : float
+        Minimum beam radius (mm).
+    r_max : float
+        Maximum beam radius (mm).
+    plates : list of dict or None
+        Plate data from reconstruction.
+    h_min : float
+        Minimum plate thickness (mm).
+    h_max : float
+        Maximum plate thickness (mm).
+    sym_data : dict or None
+        Symmetry data for mirror-half enforcement.
 
-    where ``λ`` is the Lagrange multiplier found by bisection to satisfy
-    the volume constraint ``Σ π r² L = target_volume_abs``.
-
-    Args:
-        nodes (numpy.ndarray): Node positions, shape ``(N, 3)``, mm.
-        edges (numpy.ndarray): Element connectivity, shape ``(M, 2)``.
-        initial_radii (numpy.ndarray): Starting radii, shape ``(M,)``, mm.
-        problem: Problem configuration object exposing ``apply(nodes)``
-            which returns ``(loads, bcs)`` dicts.
-        E (float): Young's modulus.
-        vol_fraction (float): Not used directly; kept for API compatibility.
-        max_iter (int): Maximum OC iterations.
-        visualize (bool): If ``True``, open an Open3D window showing the
-            final radius distribution.
-        target_volume_abs (float or None): Target total frame volume
-            ``Σ π r² L`` in mm³.  If ``None``, derived from initial radii.
-        r_min (float): Minimum allowed beam radius (mm). Increase this to
-            prevent low-sensitivity beams from collapsing entirely (e.g. 0.5).
-        r_max (float): Maximum allowed beam radius (mm).
-
-    Returns:
-        tuple:
-            - **radii** (``numpy.ndarray``, shape ``(M,)``): Optimised radii.
-            - **c_initial** (``float``): Compliance before optimisation.
-            - **c_final** (``float``): Compliance after optimisation.
+    Returns
+    -------
+    radii : ndarray
+        Optimised beam radii.
+    c_initial : float
+        Compliance before optimisation.
+    c_final : float
+        Compliance after optimisation.
+    history : list
+        Per-iteration compliance values.
+    plate_thicknesses : list of float or None
+        Optimised plate thicknesses (None if no plates).
     """
     radii = initial_radii.copy()
     use_curved = ctrl_pts is not None
+    has_plates = plates is not None and len(plates) > 0
 
-    # Pre-calc lengths (arc length for curved beams, chord for straight)
+    # Pre-calc beam lengths
     lengths = []
     for idx, (u, v) in enumerate(edges):
         if use_curved and ctrl_pts[idx] is not None:
@@ -139,96 +186,227 @@ def optimize_size(nodes, edges, initial_radii, problem, E=1000.0, vol_fraction=1
         else:
             lengths.append(np.linalg.norm(nodes[int(u)] - nodes[int(v)]))
     lengths = np.array(lengths)
-    
-    # Target Volume
-    current_vol = np.sum(np.pi * radii**2 * lengths)
-    vol_init = current_vol
-    
+
+    # Plate setup
+    plate_thicknesses = None
+    plate_areas = None
+    if has_plates:
+        plate_thicknesses = []
+        for p in plates:
+            ms = p.get("mid_surface")
+            h = p.get("thickness", 1.0)
+            if ms is not None:
+                h = ms.get("mean_thickness", h)
+            plate_thicknesses.append(max(h, h_min))
+        plate_thicknesses = np.array(plate_thicknesses)
+        plate_areas = _compute_plate_areas(plates)
+        plate_thicknesses_init = plate_thicknesses.copy()
+        plate_vol_init = np.sum(plate_areas * plate_thicknesses)
+        print(f"[Opt] Plates: {len(plates)}, total area={np.sum(plate_areas):.2f} mm², "
+              f"initial plate volume={plate_vol_init:.2f} mm³")
+
+    # Target Volume (beams + plates combined)
+    beam_vol = np.sum(np.pi * radii**2 * lengths)
+    plate_vol = np.sum(plate_areas * plate_thicknesses) if has_plates else 0.0
+    vol_init = beam_vol + plate_vol
+
     if target_volume_abs is not None:
-         target_vol = target_volume_abs
-         print(f"[Opt] Using Absolute Target Volume from Metadata/Args")
+        target_vol = target_volume_abs
+        if has_plates:
+            # Target includes plate volume now
+            target_vol = target_volume_abs + plate_vol
+            print(f"[Opt] Target volume adjusted: beam={target_volume_abs:.2f} + "
+                  f"plate={plate_vol:.2f} = {target_vol:.2f} mm³")
+        print(f"[Opt] Using Absolute Target Volume from Metadata/Args")
     else:
-         target_vol = current_vol * vol_fraction
-    
-    print(f"[Opt] Initial Volume: {current_vol:.2f} -> Target: {target_vol:.2f}")
-    
+        target_vol = vol_init * vol_fraction
+
+    print(f"[Opt] Initial Volume: {vol_init:.2f} (beam={beam_vol:.2f}, "
+          f"plate={plate_vol:.2f}) -> Target: {target_vol:.2f}")
+
     compliance_hist = []
     radii_init = initial_radii.copy()
-    
+
     # Setup Loads/BCs from Problem Config
     loads, bcs = problem.apply(nodes)
-            
+
     print(f"[Opt] Config '{problem.name}': {len(bcs)} fixed nodes, {len(loads)} loaded nodes.")
-    
+
     if len(loads) == 0:
         print("[Error] No loads defined! Optimization cannot proceed.")
-        return radii, 0.0, 0.0, []  # (radii, c_init, c_final, history)
-        
+        return radii, 0.0, 0.0, [], plate_thicknesses
+
+    # ── Symmetry pre-computation ─────────────────────────────────
+    sym_edge_pairs = None
+    if sym_data is not None:
+        from src.optimization.symmetry import (
+            find_symmetric_node_pairs, find_symmetric_edge_pairs,
+            average_symmetric_radii,
+        )
+        _sym_node_info = find_symmetric_node_pairs(
+            nodes, sym_data['planes'], tol=sym_data['tol'])
+        sym_edge_pairs = find_symmetric_edge_pairs(edges, _sym_node_info)
+        _total_pairs = sum(len(v) for v in sym_edge_pairs.values())
+        print(f"[Opt] Symmetry: {_total_pairs} edge pair(s) for radius averaging")
+
     if visualize:
-        # Viz 1: Loads & Initial State
         load_geoms = viz_loads(nodes, loads, bcs, scale=10.0)
         graph_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
         show_step("Initial Setup (Yellow=Load, Cyan=Fixed)", load_geoms + graph_geoms)
-    
+
     # Optimization Loop
     for it in range(max_iter):
-        # 1. FEM
+        # 1. FEM Solve (with plates if available)
         if use_curved:
             u, compliance, _ = solve_curved_frame(
                 nodes, edges, radii, ctrl_pts, E=E, loads=loads, bcs=bcs)
+            all_nodes = nodes
+            shell_elements = []
+        elif has_plates:
+            result = solve_frame(
+                nodes, edges, radii, E=E, loads=loads, bcs=bcs,
+                plates=plates, plate_thicknesses=plate_thicknesses.tolist())
+            u, compliance, beam_elements, shell_elements = result
+            # Get expanded node array for gradient computation
+            from src.optimization.fem import _build_plate_node_map
+            _, all_nodes, _, _ = _build_plate_node_map(plates, len(nodes), nodes, bcs, loads)
         else:
             u, compliance, _ = solve_frame(
                 nodes, edges, radii, E=E, loads=loads, bcs=bcs)
+            all_nodes = nodes
+            shell_elements = []
+
         compliance_hist.append(compliance)
 
         if np.isnan(compliance):
-            print("[ERROR] Beam Graph is singular or disconnected (NaN Compliance). Skipping Size Optimization.")
+            print("[ERROR] System is singular or disconnected (NaN Compliance). "
+                  "Skipping Size Optimization.")
             break
 
-        # 2. Gradient
+        # 2. Beam gradients
         if use_curved:
             gradients = compute_curved_size_gradients(
                 nodes, edges.astype(int), radii, ctrl_pts, u, E=E)
         else:
             gradients = compute_sensitivities(
-                nodes, edges.astype(int), radii, u, E=E)
-        
-        # 3. Update (OC)
-        radii_new = optimality_criteria_update(radii, gradients, lengths, vol_fraction, target_vol,
-                                               r_min=r_min, r_max=r_max)
-        
-        # 4. Check Change
-        change = np.linalg.norm(radii_new - radii) / np.linalg.norm(radii)
-        vol_meas = np.sum(np.pi * radii_new**2 * lengths)
-        
-        print(f"   Iter {it}: Compliance={compliance:.4e}, Vol={vol_meas:.2f}, Change={change:.4f}")
-        
+                all_nodes, edges.astype(int), radii, u, E=E)
+
+        # 3. Plate thickness gradients
+        if has_plates and len(shell_elements) > 0:
+            h_grads = compute_shell_thickness_gradients(
+                plates, plate_thicknesses, shell_elements,
+                all_nodes, u, E=E, nu=0.3)
+        else:
+            h_grads = None
+
+        # 4. Joint OC update (beams + plates share one Lagrange multiplier)
+        if has_plates and h_grads is not None:
+            radii_new, h_new = _joint_oc_update(
+                radii, gradients, lengths,
+                plate_thicknesses, h_grads, plate_areas,
+                target_vol, r_min, r_max, h_min, h_max)
+        else:
+            radii_new = optimality_criteria_update(
+                radii, gradients, lengths, vol_fraction, target_vol,
+                r_min=r_min, r_max=r_max)
+            h_new = plate_thicknesses
+
+        # 4b. Enforce symmetric radii (exact averaging)
+        if sym_edge_pairs is not None:
+            radii_new = average_symmetric_radii(radii_new, sym_edge_pairs)
+
+        # 5. Check convergence
+        r_change = np.linalg.norm(radii_new - radii) / max(np.linalg.norm(radii), 1e-10)
+        h_change = 0.0
+        if has_plates and h_new is not None:
+            h_change = np.linalg.norm(h_new - plate_thicknesses) / max(np.linalg.norm(plate_thicknesses), 1e-10)
+
+        change = max(r_change, h_change)
+
+        beam_vol_new = np.sum(np.pi * radii_new**2 * lengths)
+        plate_vol_new = np.sum(plate_areas * h_new) if h_new is not None else 0.0
+        vol_meas = beam_vol_new + plate_vol_new
+
+        if has_plates:
+            print(f"   Iter {it}: C={compliance:.4e}, Vol={vol_meas:.2f} "
+                  f"(beam={beam_vol_new:.1f}, plate={plate_vol_new:.1f}), "
+                  f"Δr={r_change:.4f}, Δh={h_change:.4f}")
+        else:
+            print(f"   Iter {it}: Compliance={compliance:.4e}, Vol={vol_meas:.2f}, Change={change:.4f}")
+
         radii = radii_new
-        
+        if h_new is not None:
+            plate_thicknesses = h_new
+
         if change < 1e-3:
             print("[Opt] Converged.")
             break
-            
-    if not compliance_hist: # Handle edge case
+
+    if not compliance_hist:
         compliance_hist = [0.0] * 2
-        
+
     if 'vol_meas' not in locals():
         vol_meas = vol_init
     if 'change' not in locals():
         change = 0.0
-            
-            
-    if visualize:
-         # Viz 2: Final State
-         final_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
-         show_step("Optimized Frame (Red=Thick, Blue=Thin)", final_geoms)
-         
-    # --- Final Report ---
-    generate_report(compliance_hist[0], compliance_hist[-1], vol_init, vol_meas, radii_init, radii, it, "Converged" if change < 1e-3 else "Max Iters Reached")
-    # --------------------
 
-    # Return radii + initial/final compliance + full per-iteration history
-    return radii, compliance_hist[0], compliance_hist[-1], list(compliance_hist)
+    if visualize:
+        final_geoms = viz_graph_radii(nodes, edges, radii, ctrl_pts=ctrl_pts)
+        show_step("Optimized Frame (Red=Thick, Blue=Thin)", final_geoms)
+
+    # --- Final Report ---
+    generate_report(compliance_hist[0], compliance_hist[-1], vol_init, vol_meas,
+                    radii_init, radii, it,
+                    "Converged" if change < 1e-3 else "Max Iters Reached")
+
+    return radii, compliance_hist[0], compliance_hist[-1], list(compliance_hist), plate_thicknesses
+
+
+def _joint_oc_update(radii, r_grads, lengths,
+                     thicknesses, h_grads, plate_areas,
+                     target_vol, r_min, r_max, h_min, h_max,
+                     move=0.2, eta=0.5):
+    """OC update for beams + plates with a shared Lagrange multiplier.
+
+    Volume constraint: Σ π r² L + Σ A_p h_p ≤ V_target
+    """
+    # dV/dr = 2πrL,  dV/dh = A_p
+    dV_dr = np.maximum(2 * np.pi * radii * lengths, 1e-6)
+    dV_dh = np.maximum(plate_areas, 1e-6)
+
+    # Numerators (positive sensitivity ratios)
+    B_r = np.maximum(-r_grads, 1e-10) / dV_dr
+    B_h = np.maximum(-h_grads, 1e-10) / dV_dh
+
+    l1, l2 = 0.0, 1e9
+
+    r_new = radii.copy()
+    h_new = thicknesses.copy()
+
+    while (l2 - l1) > (l1 + l2) * 1e-4:
+        l_mid = 0.5 * (l2 + l1)
+
+        # Beam update
+        r_trial = radii * (B_r / l_mid) ** eta
+        r_trial = np.clip(r_trial, radii * (1 - move), radii * (1 + move))
+        r_trial = np.clip(r_trial, r_min, r_max)
+
+        # Plate update
+        h_trial = thicknesses * (B_h / l_mid) ** eta
+        h_trial = np.clip(h_trial, thicknesses * (1 - move), thicknesses * (1 + move))
+        h_trial = np.clip(h_trial, h_min, h_max)
+
+        vol_trial = np.sum(np.pi * r_trial**2 * lengths) + np.sum(plate_areas * h_trial)
+
+        if vol_trial > target_vol:
+            l1 = l_mid
+        else:
+            l2 = l_mid
+
+        r_new = r_trial
+        h_new = h_trial
+
+    return r_new, h_new
 
 def generate_report(c_init, c_final, v_init, v_final, r_init, r_final, iterations, message, filename="size_opt_report.txt"):
     """

@@ -8,6 +8,8 @@ scikit-image
 networkx
 open3d
 trimesh           # External mesh input (STL/OBJ/PLY) via --mesh_input
+pyvista>=0.43     # 3D FEA visualization (off-screen rendering)
+pyevtk            # VTK file export for ParaView (optional)
 
 # Parameter tuning (optional — only needed for tune_parameters.py)
 optuna

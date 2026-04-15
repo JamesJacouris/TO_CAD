@@ -224,7 +224,41 @@ Curved Beams
      - Description
    * - ``--curved``
      - off
-     - Fit cubic Bézier curves to skeleton edges (geometry only; FEM always uses straight beams)
+     - Fit cubic Bézier curves to skeleton edges; enables IGA Timoshenko curved-beam elements for beams with significant curvature
+
+External Mesh Input
+~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :widths: 25 12 63
+   :header-rows: 1
+
+   * - Argument
+     - Default
+     - Description
+   * - ``--mesh_input``
+     - —
+     - Path to external STL/OBJ mesh (skips Top3D; voxelises with trimesh)
+   * - ``--mesh_pitch``
+     - 1.0
+     - Voxel pitch in mm for mesh voxelisation
+
+Symmetry
+~~~~~~~~~
+
+.. list-table::
+   :widths: 25 12 63
+   :header-rows: 1
+
+   * - Argument
+     - Default
+     - Description
+   * - ``--symmetry``
+     - —
+     - Symmetry axis: ``x``, ``y``, or ``z`` (mirror-half skeleton enforcement)
+   * - ``--sym_tol``
+     - 1.0
+     - Tolerance for snapping nodes to the symmetry plane (mm)
 
 Output & Control
 ~~~~~~~~~~~~~~~~~

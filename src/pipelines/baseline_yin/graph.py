@@ -15,7 +15,7 @@ from scipy.ndimage import label, center_of_mass, binary_dilation
 from scipy.spatial import KDTree
 from src.pipelines.baseline_yin.topology import (
     get_neighbor_offsets, count_neighbors, is_surface_point, is_surface_point_relaxed, is_surface_boundary,
-    get_neighborhood_window
+    get_neighborhood_window, count_plane_octants
 )
 
 def draw_line_3d(p1, p2):
@@ -30,10 +30,99 @@ def draw_line_3d(p1, p2):
         points.append(tuple(np.round(pt).astype(int)))
     return points
 
-def consolidate_tagged_voxels(skeleton, tags):
+def _thin_ring_cluster(cluster_mask, neighbor_coords, full_shape):
+    """Thin a ring-shaped tagged cluster to its 1-voxel medial *curve*.
+
+    Uses Yin mode=0 (curve-preserving) thinning on a sub-volume that
+    contains the cluster voxels and the immediate skeleton neighbours
+    (tagged, hence protected from deletion).  Mode=0 thins to 1-D
+    curves rather than 2-D medial surfaces, which avoids nested-square
+    artefacts for flat rings.
+
+    After thinning, bridge lines are drawn to any neighbour skeleton
+    voxels that lost 26-adjacency due to the ring shrinking inward.
+
+    Returns a list of ``(z, y, x)`` tuples, or ``None`` on failure.
+    """
+    from src.pipelines.baseline_yin.thinning import thin_grid_yin
+
+    coords = np.argwhere(cluster_mask)
+    if len(coords) < 4:
+        return None  # too small for a meaningful ring
+
+    # Extract bounding box with padding for 3×3×3 neighbourhood context
+    pad = 2
+    mins = np.maximum(coords.min(axis=0) - pad, 0)
+    maxs = np.minimum(coords.max(axis=0) + pad + 1, np.array(full_shape))
+
+    # Build sub-volume: cluster voxels + tagged neighbour context
+    sub_cluster = cluster_mask[mins[0]:maxs[0], mins[1]:maxs[1], mins[2]:maxs[2]]
+    sub_vol = sub_cluster.astype(np.uint8).copy()
+    sub_tags = np.zeros_like(sub_vol, dtype=np.int32)
+
+    for n_idx in neighbor_coords:
+        lz = int(n_idx[0]) - mins[0]
+        ly = int(n_idx[1]) - mins[1]
+        lx = int(n_idx[2]) - mins[2]
+        if (0 <= lz < sub_vol.shape[0] and 0 <= ly < sub_vol.shape[1]
+                and 0 <= lx < sub_vol.shape[2]):
+            sub_vol[lz, ly, lx] = 1
+            sub_tags[lz, ly, lx] = 1  # protect from deletion
+
+    # Curve-preserving thinning (mode=0) — reduces to 1-D skeleton
+    thin_grid_yin(sub_vol, tags=sub_tags, max_iters=50, mode=0)
+
+    # Collect surviving cluster voxels (exclude tagged neighbours)
+    survived = np.argwhere((sub_vol > 0) & (sub_tags == 0))
+    if len(survived) == 0:
+        return None
+
+    result = [(int(z + mins[0]), int(y + mins[1]), int(x + mins[2]))
+              for z, y, x in survived]
+    ring_set = set(result)
+
+    # Bridge to any neighbour that lost 26-adjacency after thinning
+    for n_idx in neighbor_coords:
+        nz, ny, nx = int(n_idx[0]), int(n_idx[1]), int(n_idx[2])
+        if any((nz + dz, ny + dy, nx + dx) in ring_set
+               for dz in (-1, 0, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+               if (dz, dy, dx) != (0, 0, 0)):
+            continue  # already adjacent
+        # Draw a short bridge from the nearest surviving voxel
+        dists = [abs(rz - nz) + abs(ry - ny) + abs(rx - nx)
+                 for rz, ry, rx in result]
+        nearest = result[int(np.argmin(dists))]
+        for pt in draw_line_3d(nearest, (nz, ny, nx)):
+            if pt not in ring_set and pt != (nz, ny, nx):
+                pz, py, px = pt
+                if (0 <= pz < full_shape[0] and 0 <= py < full_shape[1]
+                        and 0 <= px < full_shape[2]):
+                    result.append(pt)
+                    ring_set.add(pt)
+
+    return result
+
+
+def consolidate_tagged_voxels(skeleton, tags, consolidate_values=None):
+    """Collapse tagged voxel clusters to single centroid nodes.
+
+    Parameters
+    ----------
+    consolidate_values : list of int or None
+        Which tag values to consolidate.  ``None`` (default) consolidates
+        all positive tags.  Pass e.g. ``[1]`` to only consolidate support
+        clusters while leaving load-tagged voxels as regular skeleton.
+    """
     skel, new_tags, centroids = skeleton.copy(), np.zeros_like(tags), []
     unique_tags = np.unique(tags)
     unique_tags = unique_tags[unique_tags > 0]
+    # Copy through tags that won't be consolidated (so they appear in new_tags
+    # for node BC assignment during graph extraction)
+    if consolidate_values is not None:
+        for t_val in unique_tags:
+            if t_val not in consolidate_values:
+                new_tags[(tags == t_val) & (skel > 0)] = t_val
+        unique_tags = np.array([t for t in unique_tags if t in consolidate_values])
     s26 = np.ones((3,3,3), dtype=np.int32)
     for t_val in unique_tags:
         mask = (tags == t_val) & (skel > 0)
@@ -46,6 +135,21 @@ def consolidate_tagged_voxels(skeleton, tags):
             neighbor_indices = np.argwhere(dilated & (skel > 0) & (~cluster_mask))
             cz, cy, cx = map(int, np.round(center))
             cz, cy, cx = np.clip([cz, cy, cx], [0,0,0], [skel.shape[0]-1, skel.shape[1]-1, skel.shape[2]-1])
+
+            # Ring detection: centroid outside cluster → hollow shape
+            if not cluster_mask[cz, cy, cx]:
+                n_cluster = int(np.sum(cluster_mask))
+                thinned = _thin_ring_cluster(cluster_mask, neighbor_indices,
+                                             skel.shape)
+                if thinned is not None:
+                    skel[cluster_mask] = 0
+                    for vz, vy, vx in thinned:
+                        skel[vz, vy, vx] = 1
+                        new_tags[vz, vy, vx] = t_val
+                    print(f"  Ring cluster (tag={t_val}): {n_cluster} → "
+                          f"{len(thinned)} voxels (skeletonized)")
+                    continue  # skip centroid creation
+
             centroid_coord = (cz, cy, cx)
             skel[cluster_mask], skel[cz, cy, cx], new_tags[cz, cy, cx] = 0, 1, t_val
             centroids.append(centroid_coord)
@@ -250,38 +354,49 @@ def _count_neighbors_volume(skeleton):
     return counts
 
 
-def classify_skeleton_post_thinning(skeleton, min_plate_size=4, flatness_ratio=3.0,
-                                     junction_thresh=4, min_avg_neighbors=3.0):
+def classify_skeleton_post_thinning(skeleton, min_plate_size=3, flatness_ratio=3.0,
+                                     junction_thresh=4, min_avg_neighbors=3.0,
+                                     linearity_max=3.5, solid=None,
+                                     skeleton_curve=None, signal_mode='both'):
     """
     Classify skeleton voxels as surface (plate) or curve (beam) using
-    local PCA planarity detection.
+    two-pass thinning comparison.
 
-    After mode=3 thinning, this function:
-      1. For each skeleton voxel, computes PCA on its local neighborhood
-         (within a radius of 4 voxels).
-      2. Voxels where the local eigenvalue ratio λ1/λ0 >= flatness_ratio
-         are marked as "locally flat" (part of a surface).
-      3. Connected components of locally-flat voxels are grouped into
-         surface regions by 26-connectivity.
-      4. Regions with >= min_plate_size voxels are classified as plates;
-         all other skeleton voxels are beams.
+    Compares mode=3 skeleton (surfaces + curves preserved) with mode=0
+    skeleton (curves only).  Voxels present in mode=3 but absent from
+    mode=0 are **plate interior** voxels — they are the surface sheets
+    that mode=0 collapsed but mode=3 preserved.
 
-    This approach correctly detects surfaces even in dense, heavily-
-    connected skeleton regions where junction-splitting fails.
+    This approach requires **no PCA, no eigenvalue thresholds, and no
+    radius parameters**.  The topological test directly identifies plate
+    surfaces.
+
+    When ``skeleton_curve`` is not provided, falls back to PCA-based
+    classification.
 
     Parameters
     ----------
     skeleton : ndarray
-        Binary skeleton volume from mode=3 thinning.
+        Binary skeleton from mode=3 thinning (surfaces + curves).
     min_plate_size : int
-        Minimum voxels for a connected flat region to be plate (default=4).
+        Minimum voxels for a connected surface region to be plate.
     flatness_ratio : float
-        Local PCA eigenvalue ratio threshold for flatness detection.
+        Used only for PCA fallback and global region linearity check.
     junction_thresh : int
-        Not used in local PCA mode (kept for CLI compatibility).
+        Kept for CLI compatibility.
     min_avg_neighbors : float
-        Minimum average neighbor count for a region to be classified as a plate (default=3.0).
-        Used to filter out 1-voxel wide chains (avg neighbors ~2.5).
+        Kept for CLI compatibility (not used in two-pass mode).
+    linearity_max : float
+        Used only for PCA fallback.
+    solid : ndarray or None
+        Pre-thinning solid volume (used for PCA fallback only).
+    skeleton_curve : ndarray or None
+        Binary skeleton from mode=0 thinning (curves only).
+        When provided, enables the two-pass topological classification.
+    signal_mode : str
+        Which signals to use: ``'both'`` (default), ``'a_only'``
+        (set-difference only), or ``'b_only'`` (plane-octant only).
+        Used for ablation studies.
 
     Returns
     -------
@@ -292,13 +407,10 @@ def classify_skeleton_post_thinning(skeleton, min_plate_size=4, flatness_ratio=3
     zone_stats : dict
         Statistics about the classification
     """
-    s26 = np.ones((3, 3, 3), dtype=np.int32)
     eps = 1e-6
-    radius = 4.0
 
-    skel_binary = (skeleton > 0).astype(np.int32)
-    skel_coords = np.argwhere(skel_binary > 0).astype(np.float64)
-    n_skel_voxels = len(skel_coords)
+    skel_both = (skeleton > 0).astype(np.int32)
+    n_skel_voxels = int(np.sum(skel_both))
 
     if n_skel_voxels == 0:
         zone_mask = np.zeros_like(skeleton, dtype=np.int8)
@@ -309,12 +421,195 @@ def classify_skeleton_post_thinning(skeleton, min_plate_size=4, flatness_ratio=3
             'n_components': 0, 'n_junctions': 0,
         }
 
-    # Step 1: Local PCA — compute per-voxel flatness
+    if skeleton_curve is None:
+        # Fallback: PCA-based classification (legacy path)
+        return _classify_pca_fallback(
+            skeleton, min_plate_size, flatness_ratio,
+            junction_thresh, min_avg_neighbors, linearity_max, solid
+        )
+
+    # ===== TWO-PASS TOPOLOGICAL CLASSIFICATION =====
+    skel_curve = (skeleton_curve > 0).astype(np.int32)
+    n_curve_voxels = int(np.sum(skel_curve))
+
+    # Signal A: Present in mode=3 but NOT in mode=0
+    # These are surface sheets that curve-preserving thinning collapsed.
+    diff_candidates = (skel_both > 0) & (skel_curve == 0)
+    n_diff = int(np.sum(diff_candidates))
+
+    # Signal B: Strict topology-based surface detection on the mode=3 skeleton.
+    # Uses count_plane_octants() which only counts octants with genuine plane
+    # pattern matches (NOT the n3 < 3 fallback that makes is_surface_point()
+    # trivially true in sparse skeletons).
+    # Real surface voxels: 4-8 plane octants.  Beam voxels: 0-2.
+    from scipy.ndimage import convolve
+    neighbor_kernel = np.ones((3, 3, 3), dtype=np.int32)
+    neighbor_kernel[1, 1, 1] = 0
+    nc_vol = convolve(skel_both, neighbor_kernel, mode='constant')
+
+    D, H, W = skel_both.shape
+    topo_candidates = np.zeros_like(skel_both, dtype=bool)
+    skel_coords = np.argwhere(skel_both > 0)
+    min_plane_octants = 4  # require at least 4 of 8 octants to have real plane patterns
+    for coord in skel_coords:
+        z, y, x = coord
+        if nc_vol[z, y, x] < 3:
+            continue
+        hood = get_neighborhood_window(skel_both, z, y, x)
+        n_plane = count_plane_octants(hood)
+        if n_plane >= min_plane_octants:
+            topo_candidates[z, y, x] = True
+    n_topo = int(np.sum(topo_candidates))
+
+    # Combine: plate candidate = Signal A OR Signal B (or single signal for ablation)
+    if signal_mode == 'a_only':
+        plate_candidates = diff_candidates
+    elif signal_mode == 'b_only':
+        plate_candidates = topo_candidates
+    else:
+        plate_candidates = diff_candidates | topo_candidates
+
+    print(f"    [PostThinningClassify] Two-pass: mode=3 has {n_skel_voxels}, "
+          f"mode=0 has {n_curve_voxels}, diff={n_diff}, topo_strict={n_topo}, "
+          f"combined={int(np.sum(plate_candidates))}")
+
+    # Label connected components
+    s26 = np.ones((3, 3, 3), dtype=np.int32)
+    flat_labels, n_regions = label(plate_candidates.astype(np.int32), structure=s26)
+
+    # Filter regions by size and global shape
+    zone_mask = np.zeros_like(skeleton, dtype=np.int8)
+    plate_labels_out = np.zeros_like(skeleton, dtype=np.int32)
+    plate_id = 0
+    n_plate_voxels = 0
+
+    for rid in range(1, n_regions + 1):
+        region_mask = (flat_labels == rid)
+        region_size = int(np.sum(region_mask))
+
+        if region_size < min_plate_size:
+            continue
+
+        # Global linearity check — reject elongated chains that may appear
+        # in the difference (e.g., beam cross-section surface remnants)
+        region_coords = np.argwhere(region_mask).astype(np.float64)
+        if len(region_coords) >= 3:
+            centered = region_coords - region_coords.mean(axis=0)
+            cov = np.cov(centered, rowvar=False)
+            if cov.ndim == 2 and cov.shape == (3, 3):
+                ev = np.sort(np.linalg.eigvalsh(cov))
+                linearity = (ev[2] + eps) / (ev[1] + eps)
+                if linearity > flatness_ratio * 3:
+                    z_range = f"{region_coords[:,2].min():.0f}-{region_coords[:,2].max():.0f}"
+                    print(f"    [PostThinningClassify] Region {rid}: size={region_size}, "
+                          f"z=[{z_range}] -> REJECTED (global_linearity={linearity:.1f})")
+                    continue
+
+        plate_id += 1
+        zone_mask[region_mask] = 1
+        plate_labels_out[region_mask] = plate_id
+        n_plate_voxels += region_size
+
+    # Growth pass: capture surface edge voxels adjacent to plate regions.
+    # Edge voxels have fewer neighbors (nc >= 2) and fewer plane octants
+    # (n_plane >= 2) than interior surface voxels.  Require n_plane >= 2
+    # to avoid pulling in pure beam voxels (n_plane = 0) at plate-beam junctions.
+    growth_count = 0
+    for coord in skel_coords:
+        z, y, x = coord
+        if zone_mask[z, y, x] != 0:
+            continue  # already classified
+        if nc_vol[z, y, x] < 2:
+            continue  # isolated endpoint
+        # Must have some surface character (at least 2 plane octants)
+        hood = get_neighborhood_window(skel_both, z, y, x)
+        if count_plane_octants(hood) < 2:
+            continue
+        # Check if any 26-neighbor is a plate voxel
+        has_plate_neighbor = False
+        for dz in range(-1, 2):
+            if has_plate_neighbor:
+                break
+            for dy in range(-1, 2):
+                if has_plate_neighbor:
+                    break
+                for dx in range(-1, 2):
+                    if dz == 0 and dy == 0 and dx == 0:
+                        continue
+                    nz, ny, nx = z + dz, y + dy, x + dx
+                    if 0 <= nz < D and 0 <= ny < H and 0 <= nx < W:
+                        if zone_mask[nz, ny, nx] == 1:
+                            has_plate_neighbor = True
+                            break
+        if has_plate_neighbor:
+            # Find which plate region this borders and assign same label
+            assigned = False
+            for dz in range(-1, 2):
+                if assigned:
+                    break
+                for dy in range(-1, 2):
+                    if assigned:
+                        break
+                    for dx in range(-1, 2):
+                        nz, ny, nx = z + dz, y + dy, x + dx
+                        if 0 <= nz < D and 0 <= ny < H and 0 <= nx < W:
+                            if plate_labels_out[nz, ny, nx] > 0:
+                                zone_mask[z, y, x] = 1
+                                plate_labels_out[z, y, x] = plate_labels_out[nz, ny, nx]
+                                growth_count += 1
+                                assigned = True
+                                break
+    n_plate_voxels += growth_count
+    if growth_count > 0:
+        print(f"    [PostThinningClassify] Growth pass: +{growth_count} edge voxels added to plates")
+
+    # All remaining skeleton voxels are beams
+    beam_mask = (skel_both > 0) & (zone_mask == 0)
+    zone_mask[beam_mask] = 2
+    n_beam_voxels = int(np.sum(beam_mask))
+
+    zone_stats = {
+        'n_plate_regions': plate_id,
+        'n_plate_voxels': n_plate_voxels,
+        'n_beam_voxels': n_beam_voxels,
+        'n_skeleton_voxels': n_skel_voxels,
+        'n_components': n_regions,
+        'n_junctions': n_diff,
+        'n_signal_a': n_diff,
+        'n_signal_b': n_topo,
+        'n_overlap': int(np.sum(diff_candidates & topo_candidates)),
+        'n_combined': int(np.sum(plate_candidates)),
+        'n_growth': growth_count,
+        'signal_mode': signal_mode,
+    }
+
+    print(f"    [PostThinningClassify] {n_skel_voxels} skeleton voxels "
+          f"({n_diff} surface diff, {n_regions} regions) -> "
+          f"{n_plate_voxels} plate ({plate_id} regions) + {n_beam_voxels} beam")
+
+    return zone_mask, plate_labels_out, zone_stats
+
+
+def _classify_pca_fallback(skeleton, min_plate_size, flatness_ratio,
+                            junction_thresh, min_avg_neighbors, linearity_max, solid):
+    """Legacy PCA-based classification (fallback when skeleton_curve not provided)."""
+    from scipy.ndimage import convolve
+
+    eps = 1e-6
+    skel_binary = (skeleton > 0).astype(np.int32)
+    skel_coords = np.argwhere(skel_binary > 0).astype(np.float64)
+    n_skel_voxels = len(skel_coords)
+
+    s26_neighbors = np.ones((3, 3, 3), dtype=np.int32)
+    s26_neighbors[1, 1, 1] = 0
+    neighbor_counts_vol = convolve(skel_binary, s26_neighbors, mode='constant', cval=0) * skel_binary
+
+    skel_radius = 4.0
     tree = KDTree(skel_coords)
     local_flat = np.zeros(n_skel_voxels)
 
     for i in range(n_skel_voxels):
-        nbrs = tree.query_ball_point(skel_coords[i], radius)
+        nbrs = tree.query_ball_point(skel_coords[i], skel_radius)
         if len(nbrs) < 4:
             continue
         local_coords = skel_coords[nbrs]
@@ -326,124 +621,42 @@ def classify_skeleton_post_thinning(skeleton, min_plate_size=4, flatness_ratio=3
         lam0, lam1 = eigenvalues[0] + eps, eigenvalues[1] + eps
         local_flat[i] = lam1 / lam0
 
-    # Step 2: Mark locally-flat voxels in the volume
     flat_volume = np.zeros_like(skel_binary)
     for i, coord in enumerate(skel_coords.astype(int)):
-        if local_flat[i] >= flatness_ratio:
-            flat_volume[coord[0], coord[1], coord[2]] = 1
-            
-    # [NEW] Step 2.5: Heal Plate Edges (Iterative with Geometry Check)
-    # PCA can fail at the exact boundary where a plate meets a beam (mixed neighborhood).
-    # If a skeleton voxel is 0 (beam) but has >= 3 neighbors that are 1 (plate), 
-    # it's likely part of the plate edge.
-    
-    # CONSTRAINT: Only heal if the voxel has some "flatness" (ratio > 1.2).
-    # True beams have ratio ~1.0. Eroded edges have intermediate values (e.g. 2.0).
-    # This stops the healing from eating into the beam.
-    
-    flat_ratio_volume = np.zeros_like(skeleton, dtype=np.float32)
-    for i, coord in enumerate(skel_coords.astype(int)):
-        flat_ratio_volume[coord[0], coord[1], coord[2]] = local_flat[i]
-        
-    from scipy.ndimage import convolve
+        y, x, z = coord
+        nc = neighbor_counts_vol[y, x, z]
+        if local_flat[i] >= flatness_ratio and nc >= 3:
+            flat_volume[y, x, z] = 1
+
     s26 = np.ones((3, 3, 3), dtype=np.int32)
-    s26[1, 1, 1] = 0
-    
-    total_healed = 0
-    for _ in range(2): # Reduced to 2 iterations for safety
-        plate_neighbor_counts = convolve(flat_volume, s26, mode='constant', cval=0)
-        
-        # Candidates:
-        # 1. Not currently plate
-        # 2. Has >= 3 plate neighbors
-        # 3. Has mild flatness (> 1.2) -> prevents eating beams
-        candidates = (
-            (skel_binary > 0) & 
-            (flat_volume == 0) & 
-            (plate_neighbor_counts >= 3) &
-            (flat_ratio_volume > 1.2)
-        )
-        
-        n_current_healed = np.sum(candidates)
-        if n_current_healed == 0:
-            break
-            
-        flat_volume[candidates] = 1
-        total_healed += n_current_healed
-        
-    if total_healed > 0:
-        print(f"    [PostThinningClassify] Healed {total_healed} plate edge voxels (constrained).")
-
-    n_locally_flat = int(np.sum(flat_volume))
-
-    # Step 3: Connected components of flat voxels -> surface regions
     flat_labels, n_flat_regions = label(flat_volume, structure=s26)
 
-    # Step 4: Build zone_mask — large flat regions are plates, rest are beams
     zone_mask = np.zeros_like(skeleton, dtype=np.int8)
     plate_labels = np.zeros_like(skeleton, dtype=np.int32)
     plate_id = 0
     n_plate_voxels = 0
 
-    # Optimization: Pre-calculate neighbor counts for all skeleton voxels
-    # A 1-voxel wide chain has ~2 neighbors per voxel.
-    # A 2D surface (plate) has >4 neighbors per voxel (interior > 6).
-    from scipy.ndimage import convolve
-    s26_neighbors = np.ones((3, 3, 3), dtype=np.int32)
-    s26_neighbors[1, 1, 1] = 0
-    skel_binary = (skeleton > 0).astype(np.int32)
-    neighbor_counts_vol = convolve(skel_binary, s26_neighbors, mode='constant', cval=0) * skel_binary
-
     for rid in range(1, n_flat_regions + 1):
         region_mask = (flat_labels == rid)
         region_size = int(np.sum(region_mask))
-
         if region_size >= min_plate_size:
-            # Local PCA verified each voxel is flat. Do global checks:
-            
-            # Check 1: Global Linearity (reject beam-like cross-sections)
-            region_coords = np.argwhere(region_mask).astype(np.float64)
-            if len(region_coords) >= 3:
-                centered = region_coords - region_coords.mean(axis=0)
-                cov = np.cov(centered, rowvar=False)
-                if cov.ndim == 2 and cov.shape == (3, 3):
-                    ev = np.sort(np.linalg.eigvalsh(cov))
-                    linearity = (ev[2] + eps) / (ev[1] + eps)
-                    if linearity > flatness_ratio * 3:
-                        continue  # too elongated globally -> beam
-
-            # Check 2: Average Neighbor Count (reject 1-voxel-wide chains)
-            # Chains have avg neighbors ~2.0-2.5. Plates have > 4.0.
-            region_nc = neighbor_counts_vol[region_mask]
-            avg_neighbors = np.mean(region_nc)
-            
-            if avg_neighbors < min_avg_neighbors:
-                 continue # Region is likely a 1-voxel wide chain
-
             plate_id += 1
             zone_mask[region_mask] = 1
             plate_labels[region_mask] = plate_id
             n_plate_voxels += region_size
 
-    # Step 5: All remaining skeleton voxels are beams
     beam_mask = (skel_binary > 0) & (zone_mask == 0)
     zone_mask[beam_mask] = 2
     n_beam_voxels = int(np.sum(beam_mask))
 
-    zone_stats = {
-        'n_plate_regions': plate_id,
-        'n_plate_voxels': n_plate_voxels,
-        'n_beam_voxels': n_beam_voxels,
-        'n_skeleton_voxels': n_skel_voxels,
-        'n_components': n_flat_regions,
-        'n_junctions': n_locally_flat,
-    }
-
-    print(f"    [PostThinningClassify] {n_skel_voxels} skeleton voxels "
-          f"({n_locally_flat} locally-flat, {n_flat_regions} regions) -> "
+    print(f"    [PostThinningClassify] PCA fallback: {n_skel_voxels} skeleton -> "
           f"{n_plate_voxels} plate ({plate_id} regions) + {n_beam_voxels} beam")
 
-    return zone_mask, plate_labels, zone_stats
+    return zone_mask, plate_labels, {
+        'n_plate_regions': plate_id, 'n_plate_voxels': n_plate_voxels,
+        'n_beam_voxels': n_beam_voxels, 'n_skeleton_voxels': n_skel_voxels,
+        'n_components': n_flat_regions, 'n_junctions': 0,
+    }
 
 
 def smooth_polyline(points, iterations=3):
@@ -455,7 +668,8 @@ def smooth_polyline(points, iterations=3):
         pts = new_pts.copy()
     return pts.tolist()
 
-def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
+def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False,
+                  consolidate_tags=None):
     """Convert a thinned skeleton to a beam graph.
 
     The function classifies skeleton voxels by local connectivity, collapses
@@ -472,6 +686,10 @@ def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
             ``skeleton``.  Tag ``1`` = fixed; tag ``2`` = loaded.
         hybrid_mode (bool): If ``True``, use the hybrid voxel classifier
             that distinguishes junction, end, surface, and body voxels.
+        consolidate_tags (list of int or None): Which tag values to
+            consolidate into centroid nodes.  ``None`` consolidates all
+            (legacy behaviour).  Pass ``[1]`` to only consolidate support
+            clusters while tracing load-tagged voxels as normal edges.
 
     Returns:
         tuple:
@@ -487,7 +705,8 @@ def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
             - **node_tags** (``dict``): Maps node index → BC tag value.
     """
     if tags is not None:
-        skeleton, tags, fixed_centroids = consolidate_tagged_voxels(skeleton, tags)
+        skeleton, tags, fixed_centroids = consolidate_tagged_voxels(
+            skeleton, tags, consolidate_values=consolidate_tags)
     v_types = classify_voxels_hybrid(skeleton) if hybrid_mode else classify_voxels(skeleton)
     if tags is not None:
         for (cz, cy, cx) in fixed_centroids:
@@ -517,7 +736,11 @@ def extract_graph(skeleton, pitch, origin, tags=None, hybrid_mode=False):
                                 inter_indices = np.array(path[1:-1])  # cols: [nely, nelx, nelz]
                                 inter_indices_reordered = inter_indices[:, [1, 0, 2]]  # → [nelx, nely, nelz]
                                 inter_coords = smooth_polyline(origin + (inter_indices_reordered * pitch) + (pitch * 0.5))
-                            edges.append([u_id, v_id, float(len(path)-1), inter_coords])
+                            # Euclidean polyline length (not hop count) for correct collapse thresholds
+                            path_arr = np.array(path)  # (N, 3) cols: [nely, nelx, nelz]
+                            path_world = origin + path_arr[:, [1, 0, 2]] * pitch + pitch * 0.5
+                            edge_weight = float(np.sum(np.linalg.norm(np.diff(path_world, axis=0), axis=1)))
+                            edges.append([u_id, v_id, edge_weight, inter_coords])
                         break
                     found_next = False
                     for dnz, dny, dnx in offsets:

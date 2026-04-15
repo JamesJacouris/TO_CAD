@@ -72,20 +72,29 @@ def _get_octant_config(neighborhood, cz, cy, cx):
 
 @njit
 def is_surface_point(neighborhood):
-    """Definition 3.14. Returns True if voxel is on a medial surface."""
-    # Plane patterns: {0x0F, 0x33, 0x55, 0xC3, 0x99, 0xA5}
+    """Definition 3.14. Returns True if voxel is on a medial surface.
+
+    Each octant must have its 4 filled voxels forming a plane, or fewer
+    than 3 filled voxels.  There are 12 plane configurations: 6 planes
+    through a 2x2x2 cube, each with 2 orientations (complementary bit
+    patterns).
+    """
+    # All 12 plane patterns: 6 planes × 2 orientations (pattern + complement)
+    # Axis-aligned: z=0/1, y=0/1, x=0/1
+    # Diagonal:     dz==dy / dz!=dy, dy==dx / dy!=dx, dz==dx / dz!=dx
     for cz in range(2):
         for cy in range(2):
             for cx in range(2):
                 config, n3 = _get_octant_config(neighborhood, cz, cy, cx)
-                if not ((config in [0x0F, 0x33, 0x55, 0xC3, 0x99, 0xA5]) or (n3 < 3)): return False
+                if not ((config in (0x0F, 0xF0, 0x33, 0xCC, 0x55, 0xAA,
+                                    0xC3, 0x3C, 0x99, 0x66, 0xA5, 0x5A)) or (n3 < 3)): return False
     return True
 
 @njit
 def is_surface_point_relaxed(neighborhood, threshold=4):
     """
-    Relaxed version of Definition 3.14. 
-    Returns True if at least 'threshold' (out of 8) corner vertices satisfy 
+    Relaxed version of Definition 3.14.
+    Returns True if at least 'threshold' (out of 8) corner vertices satisfy
     the plane pattern or surface edge condition.
     Default threshold 4 is more robust to discretization noise.
     """
@@ -94,9 +103,29 @@ def is_surface_point_relaxed(neighborhood, threshold=4):
         for cy in range(2):
             for cx in range(2):
                 config, n3 = _get_octant_config(neighborhood, cz, cy, cx)
-                if (config in [0x0F, 0x33, 0x55, 0xC3, 0x99, 0xA5]) or (n3 < 3):
+                if (config in (0x0F, 0xF0, 0x33, 0xCC, 0x55, 0xAA,
+                               0xC3, 0x3C, 0x99, 0x66, 0xA5, 0x5A)) or (n3 < 3):
                     satisfied += 1
     return satisfied >= threshold
+
+@njit
+def count_plane_octants(neighborhood):
+    """Count octants with genuine plane pattern matches (excluding n3 < 3 fallback).
+
+    Unlike is_surface_point() which passes any octant with n3 < 3, this counts
+    only octants where the filled voxels actually form a plane.  Useful for
+    distinguishing true surface voxels (4-8 plane octants) from beam voxels
+    in sparse skeletons (0-2 plane octants).
+    """
+    count = 0
+    for cz in range(2):
+        for cy in range(2):
+            for cx in range(2):
+                config, n3 = _get_octant_config(neighborhood, cz, cy, cx)
+                if config in (0x0F, 0xF0, 0x33, 0xCC, 0x55, 0xAA,
+                              0xC3, 0x3C, 0x99, 0x66, 0xA5, 0x5A):
+                    count += 1
+    return count
 
 @njit
 def is_surface_boundary(z, y, x, skeleton, surface_mask):

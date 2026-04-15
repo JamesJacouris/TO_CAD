@@ -16,6 +16,7 @@ Note
 ----
 Requires ``open3d`` (mocked during Sphinx builds).
 """
+import os
 import open3d as o3d
 import numpy as np
 
@@ -412,6 +413,131 @@ def save_zone_visualization(zone_mask, pitch, origin, output_path):
     except Exception as e:
         print(f"[Warning] Could not save zone visualization: {e}")
         return False
+
+def viz_strain_energy(se_field, mask, pitch, origin):
+    """Visualise per-element strain energy as an Open3D point cloud.
+
+    Args:
+        se_field: (nely, nelx, nelz) float array of strain energy density.
+        mask: (nely, nelx, nelz) bool array — only show voxels where mask>0.
+        pitch: Voxel size in mm.
+        origin: (3,) world-space origin.
+
+    Returns:
+        Open3D PointCloud coloured by log(strain energy).
+    """
+    indices = np.argwhere(mask > 0)
+    if len(indices) == 0:
+        return None
+
+    se_vals = se_field[indices[:, 0], indices[:, 1], indices[:, 2]]
+    # Filter out near-zero values for better colour range
+    valid = se_vals > 1e-12
+    if np.sum(valid) == 0:
+        return None
+    indices = indices[valid]
+    se_vals = se_vals[valid]
+
+    # Log-scale for visibility (strain energy spans orders of magnitude)
+    log_se = np.log10(se_vals + 1e-20)
+    lo, hi = np.percentile(log_se, [2, 98])
+    if hi - lo < 1e-6:
+        hi = lo + 1.0
+    t = np.clip((log_se - lo) / (hi - lo), 0.0, 1.0)
+
+    try:
+        import matplotlib.pyplot as plt
+        colors = plt.get_cmap("hot")(t)[:, :3]
+    except ImportError:
+        colors = np.column_stack([t, np.zeros_like(t), 1.0 - t])
+
+    pts_xyz = indices[:, [1, 0, 2]]
+    pts = origin + pts_xyz * pitch + pitch * 0.5
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pts)
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
+
+
+def save_strain_energy_plot(se_field, mask, pitch, origin, output_path,
+                            title="Strain Energy Density"):
+    """Save a publication-quality strain energy heatmap as PNG/PDF/SVG.
+
+    Produces three orthogonal slice views (XY top, XZ side, YZ side) with
+    strain energy projected (max along the slicing axis) for clarity.
+
+    Args:
+        se_field: (nely, nelx, nelz) per-element strain energy density.
+        mask: (nely, nelx, nelz) bool — only include active voxels.
+        pitch: Voxel size in mm.
+        origin: (3,) world origin.
+        output_path: Destination path (without extension).
+        title: Figure title.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
+    except ImportError:
+        print("[Viz] matplotlib not available — skipping strain energy plot.")
+        return
+
+    # Mask out background
+    se_masked = np.where(mask > 0, se_field, 0.0)
+
+    # Max projections along each axis for 2D heatmaps
+    proj_xy = np.max(se_masked, axis=2)  # (nely, nelx) — top view
+    proj_xz = np.max(se_masked, axis=0)  # (nelx, nelz) — front view
+    proj_yz = np.max(se_masked, axis=1)  # (nely, nelz) — side view
+
+    # Log-scale normalisation
+    all_vals = se_masked[se_masked > 1e-12]
+    if len(all_vals) == 0:
+        print("[Viz] No strain energy to plot.")
+        return
+    vmin = np.percentile(all_vals, 2)
+    vmax = np.percentile(all_vals, 98)
+    if vmin <= 0:
+        vmin = 1e-12
+    norm = mcolors.LogNorm(vmin=vmin, vmax=max(vmax, vmin * 10))
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+
+    # Replace zeros with NaN for transparent background
+    def _prep(arr):
+        out = arr.astype(float).copy()
+        out[out <= 1e-12] = np.nan
+        return out
+
+    im0 = axes[0].imshow(_prep(proj_xy), cmap='hot', norm=norm,
+                          origin='lower', aspect='equal')
+    axes[0].set_title("Top View (max over Z)", fontsize=9)
+    axes[0].set_xlabel("X (elements)")
+    axes[0].set_ylabel("Y (elements)")
+
+    im1 = axes[1].imshow(_prep(proj_xz).T, cmap='hot', norm=norm,
+                          origin='lower', aspect='equal')
+    axes[1].set_title("Front View (max over Y)", fontsize=9)
+    axes[1].set_xlabel("X (elements)")
+    axes[1].set_ylabel("Z (elements)")
+
+    im2 = axes[2].imshow(_prep(proj_yz).T, cmap='hot', norm=norm,
+                          origin='lower', aspect='equal')
+    axes[2].set_title("Side View (max over X)", fontsize=9)
+    axes[2].set_xlabel("Y (elements)")
+    axes[2].set_ylabel("Z (elements)")
+
+    fig.suptitle(title, fontsize=11)
+    fig.colorbar(im0, ax=axes, orientation='horizontal', fraction=0.04,
+                 pad=0.12, label='Strain Energy Density (log scale)')
+    fig.tight_layout(rect=[0, 0.08, 1, 0.95])
+
+    base = os.path.splitext(output_path)[0] if '.' in os.path.basename(output_path) else output_path
+    for ext in ('png', 'pdf', 'svg'):
+        fig.savefig(f"{base}.{ext}", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[Viz] Strain energy plot saved: {base}.png/.pdf/.svg")
+
 
 def viz_graph_radii(nodes, edges, radii, ctrl_pts=None, n_bezier=16):
     """Visualise graph edges coloured by radius.

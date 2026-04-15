@@ -59,6 +59,20 @@ Point the dialog at ``output/hybrid_v2/quickstart.json``.
 
    Omit ``--skip_top3d`` and the pipeline runs Stage 0 automatically.
 
+.. tip::
+
+   **External mesh input** — start from an existing STL or OBJ mesh instead
+   of running Top3D::
+
+      python run_pipeline.py \
+          --mesh_input models/rocker_arm.stl \
+          --mesh_pitch 0.5 \
+          --output rocker_arm.json
+
+   The mesh is voxelised at the given pitch and fed into the skeleton
+   reconstruction pipeline.  No BC tags are generated; EDT-based radius
+   assignment is used by default.
+
 Typical output files
 ---------------------
 

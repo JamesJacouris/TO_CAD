@@ -22,8 +22,10 @@ def main():
     # Output and Control
     parser.add_argument("--max_loop", type=int, default=50, help="Max Iterations")
     parser.add_argument("--output", default="python_top3d_result.npz", help="Output .npz file")
+    parser.add_argument("--export_stl", action="store_true",
+                        help="Also export result as watertight STL (marching cubes isosurface)")
     # Problem Type
-    parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "roof_slab", "bridge", "deck", "quadcopter", "simply_supported", "l_bracket", "obstacle_course", "vault"], help="Problem type")
+    parser.add_argument("--problem", type=str, default="cantilever", choices=["cantilever", "roof", "roof_slab", "elevated_slab", "bridge", "deck", "quadcopter", "simply_supported", "l_bracket", "obstacle_course", "vault", "curved_shell", "pipe_bracket"], help="Problem type")
     parser.add_argument("--load_dist", type=str, default="point", choices=["point", "surface_top", "surface_bottom"], help="Load distribution")
     # Quadcopter-specific
     parser.add_argument("--motor_arm_frac", type=float, default=0.1,
@@ -108,6 +110,64 @@ def main():
             args.load_dist = "surface_top"
             if args.load_fy == -1.0:  # If using default load
                 args.load_fy = -100.0  # Heavier load for slab
+
+    elif args.problem == "elevated_slab":
+        # Elevated slab on 4 pad columns — showcase for hybrid beam+plate pipeline.
+        # Physical analogy: table / building floor slab on 4 columns.
+        # Pad supports (radius=2 nodes, ~13 nodes each) instead of single-node
+        # supports prevent stress-concentration lattice artifacts and guide SIMP
+        # toward clean column formation.
+        #
+        # Load is in -Z (through the slab and columns) for a natural gravity-like
+        # path that produces balanced plate + beam topology.
+        #
+        # Recommended:
+        #   python run_top3d.py --problem elevated_slab \
+        #       --nelx 40 --nely 40 --nelz 30 \
+        #       --volfrac 0.12 --rmin 2.0 --max_loop 80 \
+        #       --output elevated_slab.npz
+        nx, ny, nz = args.nelx, args.nely, args.nelz
+
+        # Pad centres: 20% inset from each corner, bottom face (z=0)
+        inset_x = max(2, int(round(0.20 * nx)))
+        inset_y = max(2, int(round(0.20 * ny)))
+        pad_centres = [
+            (inset_x,      inset_y,      0),
+            (nx - inset_x, inset_y,      0),
+            (inset_x,      ny - inset_y, 0),
+            (nx - inset_x, ny - inset_y, 0),
+        ]
+
+        # Radius-2 pad: ~13 fixed nodes per corner (disc in XY at z=0).
+        pad_radius = 2
+        fixed_dofs_list = []
+        total_fixed_nodes = 0
+        for (cx, cy, cz) in pad_centres:
+            pad_mask = (
+                ((il_flat - cx)**2 + (jl_flat - cy)**2 <= pad_radius**2)
+                & (kl_flat == cz)
+            )
+            pad_nodes = np.where(pad_mask)[0]
+            total_fixed_nodes += len(pad_nodes)
+            for n in pad_nodes:
+                fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[elevated_slab] Fixed {total_fixed_nodes} nodes across 4 pad supports "
+              f"(radius={pad_radius}, inset=({inset_x},{inset_y})).")
+        for (cx, cy, cz) in pad_centres:
+            print(f"  Pad at ({cx}, {cy}, {cz})")
+
+        # Load: distributed across top surface (z=nz), in -Z direction.
+        # This creates a gravity-like load path: slab -> columns -> supports.
+        top_mask = (kl_flat == nz)
+        top_nodes = np.where(top_mask)[0]
+        n_top = len(top_nodes)
+        fz_total = args.load_fz if args.load_fz != 0.0 else -1.0
+        for n in top_nodes:
+            solver.set_load(3*n + 2, fz_total / n_top)
+        print(f"[elevated_slab] Applied {fz_total:.1f} N (-Z) distributed across "
+              f"{n_top} top-surface nodes (z={nz}).")
+        args.load_dist = "already_applied"
 
     elif args.problem == "quadcopter":
         # X-config quadcopter frame (corrected formulation):
@@ -492,6 +552,109 @@ def main():
               f"at centre strip x∈[{cx-strip},{cx+strip}], z={nz}")
         args.load_dist = "already_applied"
 
+    elif args.problem == "curved_shell":
+        # Curved shell roof: wide edge supports + full top surface load.
+        # Produces barrel vault / catenary shell topology — ideal for testing
+        # the curved surface classification and FreeCAD offset shell pipeline.
+        # Recommended: --nelx 60 --nely 20 --nelz 30 --volfrac 0.10 --rmin 2.0
+        nx, ny, nz = args.nelx, args.nely, args.nelz
+
+        # Fixed: wide pad supports at both X-edges, bottom surface (z=0), all Y
+        pad = max(3, nx // 15)
+        fixed_mask = ((il_flat <= pad) | (il_flat >= nx - pad)) & (kl_flat == 0)
+        fixed_nodes = np.where(fixed_mask)[0]
+        fixed_dofs_list = []
+        for n in fixed_nodes:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[curved_shell] Fixed {len(fixed_nodes)} nodes at bottom edge pads "
+              f"(x<={pad} and x>={nx-pad}, z=0, all y)")
+
+        # Load: entire top surface (z=nz), distributed downward
+        load_mask = (kl_flat == nz)
+        load_nodes = np.where(load_mask)[0]
+        n_load = len(load_nodes)
+        fy_total = args.load_fy if args.load_fy != -1.0 else -1000.0
+        for n in load_nodes:
+            solver.set_load(3*n + 1, fy_total / n_load)
+        print(f"[curved_shell] Applied {fy_total:.1f} N (-Y) across {n_load} nodes "
+              f"on full top surface (z={nz})")
+        args.load_dist = "already_applied"
+
+    elif args.problem == "pipe_bracket":
+        # Pipe bracket from Yin's paper: two cylindrical pipe openings in a cuboid.
+        # Fixed at 4 vertical corner edges, loaded at 4 cardinal points per pipe.
+        # Produces mixed beam-plate topology with curved shell surfaces around pipes.
+        # Paper params: nelx=120, nely=60, nelz=40, p=3, rmin=3, Vf=0.1, 100 iters.
+        # Cylinder centres at x=0.3*nelx and x=0.7*nelx, y=nely/2, R=0.3*nely.
+        # For faster testing: --nelx 60 --nely 30 --nelz 20
+        nx, ny, nz = args.nelx, args.nely, args.nelz
+
+        # Cylinder parameters (scale proportionally with domain)
+        R = max(3, int(round(0.3 * ny)))
+        cx1 = int(round(0.3 * nx))
+        cx2 = int(round(0.7 * nx))
+        cy_ctr = ny // 2
+        print(f"[pipe_bracket] Domain: {nx}x{ny}x{nz}")
+        print(f"[pipe_bracket] Cylinders: R={R}, centres ({cx1},{cy_ctr}) and ({cx2},{cy_ctr})")
+
+        # Passive voids: two through-Z cylinders
+        passive = np.zeros((ny, nx, nz), dtype=bool)
+        xi_arr = np.arange(nx)
+        yi_arr = np.arange(ny)
+        XX, YY = np.meshgrid(xi_arr, yi_arr)
+        for cxp in [cx1, cx2]:
+            mask2d = (XX - cxp)**2 + (YY - cy_ctr)**2 <= R**2
+            passive[mask2d, :] = True
+        solver.set_passive_void(passive)
+        n_void = int(passive.sum())
+        print(f"[pipe_bracket] Passive voids: {n_void} elements "
+              f"({100*n_void/(nx*ny*nz):.1f}% of domain)")
+
+        # Fixed: 4 vertical corner edges (running in Y direction, all nely+1 nodes)
+        fixed_mask = (
+            ((il_flat == 0) | (il_flat == nx)) &
+            ((kl_flat == 0) | (kl_flat == nz))
+        )
+        fixed_nodes = np.where(fixed_mask)[0]
+        fixed_dofs_list = []
+        for n in fixed_nodes:
+            fixed_dofs_list.extend([3*n, 3*n+1, 3*n+2])
+        solver.set_fixed_dofs(np.array(fixed_dofs_list))
+        print(f"[pipe_bracket] Fixed {len(fixed_nodes)} nodes at 4 vertical corner edges")
+
+        # Loads: 4 cardinal points per pipe, each applying F=100 downward (-Y)
+        F_per_point = 100.0
+        load_points = []
+        for cxp in [cx1, cx2]:
+            load_points.extend([
+                (cxp, cy_ctr + R, "top"),
+                (cxp, cy_ctr - R, "bottom"),
+                (cxp - R, cy_ctr, "left"),
+                (cxp + R, cy_ctr, "right"),
+            ])
+
+        total_loaded = 0
+        for (lx, ly, label) in load_points:
+            lx = int(np.clip(lx, 0, nx))
+            ly = int(np.clip(ly, 0, ny))
+            load_mask = (il_flat == lx) & (jl_flat == ly)
+            load_nodes_line = np.where(load_mask)[0]
+            n_line = len(load_nodes_line)
+            if n_line == 0:
+                print(f"  WARNING: No nodes at ({lx},{ly}) [{label}] — skipping")
+                continue
+            for n in load_nodes_line:
+                solver.set_load(3*n + 1, -F_per_point / n_line)
+            total_loaded += n_line
+            print(f"  Load {label}: ({lx},{ly}) -> {n_line} Z-nodes, "
+                  f"{F_per_point:.0f} N (-Y)")
+
+        total_force = F_per_point * len(load_points)
+        print(f"[pipe_bracket] Total: {total_force:.0f} N across {total_loaded} nodes "
+              f"({len(load_points)} support points)")
+        args.load_dist = "already_applied"
+
     else:
         # Default: Cantilever (Fixed Left Wall x=0)
         fixed_node_indices = np.where(il_flat == 0)[0]
@@ -541,22 +704,38 @@ def main():
         print(f"Force Vector: [{args.load_fx}, {args.load_fy}, {args.load_fz}]")
 
     # Change Iterations
-    xPhys, _ = solver.optimize(max_loop=args.max_loop)
+    xPhys, compliance_history = solver.optimize(max_loop=args.max_loop)
     
     # Export
     # Save rho, bc_tags, pitch, origin as .npz (compressed dict)
     
+    # Compute total load vector from the solver's force array (3 DOFs per node)
+    f = solver.f
+    total_fx = np.sum(f[0::3])
+    total_fy = np.sum(f[1::3])
+    total_fz = np.sum(f[2::3])
+    load_vector_total = np.array([total_fx, total_fy, total_fz])
+    print(f"Total Load Vector: [{total_fx:.2f}, {total_fy:.2f}, {total_fz:.2f}]")
+
     output_dict = {
         'rho': xPhys,
         'bc_tags': solver.bc_tags,
         'pitch': 1.0,
-        'origin': [0, 0, 0]
+        'origin': [0, 0, 0],
+        'load_vector': load_vector_total,
+        'compliance_history': np.array(compliance_history),
+        'E0': 1e3,
     }
     
     np.savez(args.output, **output_dict)
-    
+
     print(f"Saved results to {args.output}")
     print(f"BC Tags Info: Fixed={np.sum(solver.bc_tags==1)}, Loaded={np.sum(solver.bc_tags==2)}")
+
+    if args.export_stl:
+        from src.export.npz_to_stl import export_top3d_stl
+        stl_path = args.output.replace('.npz', '.stl')
+        export_top3d_stl(args.output, stl_path, vol_thresh=0.3)
 
 if __name__ == "__main__":
     main()

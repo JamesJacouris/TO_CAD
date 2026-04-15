@@ -111,3 +111,14 @@ Open3D and Matplotlib visualisation utilities.
    :undoc-members:
    :show-inheritance:
    :member-order: bysource
+
+mesh\_voxelizer
+----------------
+
+External STL/OBJ mesh voxelisation for the ``--mesh_input`` pipeline path.
+
+.. automodule:: src.mesh_import.mesh_voxelizer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: bysource

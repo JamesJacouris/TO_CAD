@@ -1,3 +1,20 @@
+"""
+Plate region recovery and mid-surface extraction for the hybrid pipeline.
+
+After zone classification identifies plate skeleton voxels, this module
+dilates them back into the original solid via morphological expansion,
+smooths the resulting mesh with a Taubin λ/μ filter, and computes
+EDT-based thickness (``2 × EDT × pitch``) for each vertex.
+
+Key functions
+~~~~~~~~~~~~~
+- :func:`recover_plate_regions_from_skeleton` — morphological dilation of
+  skeleton plate voxels into the original solid to recover full-thickness
+  plate regions.
+- :func:`extract_plates_v2` — end-to-end plate extraction producing both
+  a solid mesh and a mid-surface with per-vertex thickness and normals.
+"""
+
 import numpy as np
 from scipy.ndimage import distance_transform_edt, binary_dilation
 from scipy.spatial import cKDTree
@@ -375,9 +392,12 @@ def extract_plates_v2(plate_skeleton, plate_labels, solid, edt, pitch, origin,
         skel_indices = np.argwhere((plate_skeleton > 0) & thinned_region)
         world_skel_centers = origin + (skel_indices[:, [1, 0, 2]] * pitch) + (pitch * 0.5)
 
+        plate_volume = float(len(solid_indices)) * (pitch ** 3)
+
         plate_dict = {
             "id": int(label_id),
             "type": "solid_mesh",
+            "volume": plate_volume,
             "voxels": world_skel_centers.tolist(), # Precision skeleton representation
             "vertices": vertices.tolist() if isinstance(vertices, np.ndarray) else vertices,
             "triangles": triangles,
@@ -391,13 +411,57 @@ def extract_plates_v2(plate_skeleton, plate_labels, solid, edt, pitch, origin,
 
         if mid_surface_data is not None:
             plate_dict["mid_surface"] = mid_surface_data
-            
+
+        # Detect curvature: measure max angular deviation of face normals
+        is_curved = False
+        max_angle_deg = 0.0
+        if mid_surface_data is not None:
+            ms_verts = np.array(mid_surface_data["vertices"])
+            ms_tris = mid_surface_data["triangles"]
+            if len(ms_tris) >= 2:
+                face_normals = []
+                for tri in ms_tris:
+                    v0, v1, v2 = ms_verts[tri[0]], ms_verts[tri[1]], ms_verts[tri[2]]
+                    fn = np.cross(v1 - v0, v2 - v0)
+                    fn_len = np.linalg.norm(fn)
+                    if fn_len > 1e-12:
+                        face_normals.append(fn / fn_len)
+                if len(face_normals) >= 2:
+                    face_normals = np.array(face_normals)
+                    mean_normal = np.mean(face_normals, axis=0)
+                    mn_len = np.linalg.norm(mean_normal)
+                    if mn_len > 1e-12:
+                        mean_normal /= mn_len
+                        dots = np.clip(face_normals @ mean_normal, -1.0, 1.0)
+                        max_angle_deg = float(np.degrees(np.arccos(np.min(dots))))
+                        is_curved = max_angle_deg > 15.0
+
+        plate_dict["is_curved"] = is_curved
+        plate_dict["max_normal_deviation_deg"] = max_angle_deg
+        if is_curved:
+            print(f"      [PlatesV2] Plate {label_id}: CURVED (max normal deviation {max_angle_deg:.1f}°)")
+
         plate_dict["cuboid"] = cuboid_data
 
         plates_data.append(plate_dict)
 
     print(f"    [PlatesV2] Successfully extracted {len(plates_data)} plates.")
     return plates_data
+
+
+def _compute_vertex_normals(vertices, triangles):
+    """Compute area-weighted per-vertex normals from a triangle mesh."""
+    normals = np.zeros_like(vertices)
+    for tri in triangles:
+        i0, i1, i2 = tri[0], tri[1], tri[2]
+        v0, v1, v2 = vertices[i0], vertices[i1], vertices[i2]
+        face_normal = np.cross(v1 - v0, v2 - v0)  # area-weighted (magnitude = 2×area)
+        normals[i0] += face_normal
+        normals[i1] += face_normal
+        normals[i2] += face_normal
+    norms = np.linalg.norm(normals, axis=1, keepdims=True)
+    norms[norms < 1e-12] = 1.0
+    return normals / norms
 
 
 def _extract_mid_surface(skel_voxels, edt, pitch, origin, bc_tags=None):
@@ -465,6 +529,9 @@ def _extract_mid_surface(skel_voxels, edt, pitch, origin, bc_tags=None):
     # Taubin smooth the mid-surface
     ms_vertices = _taubin_smooth(ms_vertices, ms_triangles, n_iters=3, lam=0.5, mu=-0.53)
 
+    # Compute per-vertex normals from triangle mesh
+    vertex_normals = _compute_vertex_normals(ms_vertices, ms_triangles)
+
     # Compute per-vertex thickness from EDT
     thickness_per_vertex = np.zeros(len(ms_vertices))
     for i, v in enumerate(ms_vertices):
@@ -501,6 +568,7 @@ def _extract_mid_surface(skel_voxels, edt, pitch, origin, bc_tags=None):
         "vertices": ms_vertices.tolist(),
         "triangles": ms_triangles,
         "thickness_per_vertex": thickness_per_vertex.tolist(),
+        "vertex_normals": vertex_normals.tolist(),
         "mean_thickness": mean_thickness,
         "node_tags": node_tags_ms
     }

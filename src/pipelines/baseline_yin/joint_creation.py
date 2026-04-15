@@ -85,10 +85,22 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
 
     all_plate_verts = np.array(all_plate_verts)
     tree = cKDTree(all_plate_verts)
-    
+
     tagged_tree = None
     if len(tagged_plate_verts) > 0:
         tagged_tree = cKDTree(np.array(tagged_plate_verts))
+
+    # Per-plate role: does this plate carry loads (tag=2)?
+    # If yes, untagged joints must default to tag=2 so loads reach the beams.
+    # If no, untagged joints default to tag=1 (rigid support).
+    plate_has_loads = {}
+    plate_has_fixed = {}
+    for i, t in enumerate(tag_per_vert):
+        p = plate_id_per_vert[i]
+        if t == 2:
+            plate_has_loads[p] = True
+        elif t == 1:
+            plate_has_fixed[p] = True
 
     # Compute node degrees for endpoint detection
     degree = {}
@@ -109,6 +121,9 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
                 return tagged_plate_tags[idx]
         return 0
 
+    # Track which plate each joint belongs to (for post-snap load transfer)
+    joint_plate = {}  # nid -> plate index
+
     # Pass 1: Snap existing beam nodes within snap_distance
     for nid, coord in list(nodes_dict.items()):
         dist, idx = tree.query(coord)
@@ -116,12 +131,14 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
             plate_vertex = all_plate_verts[idx]
             nodes_dict[nid] = np.array(plate_vertex)
             p_idx = plate_id_per_vert[idx]
+            joint_plate[nid] = p_idx
 
             # Inherit tag from nearby tagged plate vertices
             if nid not in node_tags or node_tags[nid] == 0:
                 plate_tag = get_tag_for_coord(plate_vertex)
                 if plate_tag > 0:
                     node_tags[nid] = plate_tag
+                # else: resolved in post-snap pass below
 
             # Record connection
             if "connection_node_ids" not in plates_data[p_idx]:
@@ -151,10 +168,13 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
             new_id = max(nodes_dict.keys()) + 1
             nodes_dict[new_id] = np.array(plate_vertex)
             
+            joint_plate[new_id] = p_idx
+
             # Inherit tag from nearby tagged plate vertices
             plate_tag = get_tag_for_coord(plate_vertex)
             if plate_tag > 0:
                 node_tags[new_id] = plate_tag
+            # else: resolved in post-snap pass below
 
             # Add a short connecting edge
             edge_len = float(dist)
@@ -173,7 +193,37 @@ def create_beam_plate_joints(nodes_dict, edges, node_tags, plates_data,
             snapped_nodes.add(new_id)
             n_new_joints += 1
 
+    # ── Post-snap tag assignment based on plate role ──────────────────
+    # For each plate, check whether its loads are already transferred to
+    # at least one joint.  If not, untagged joints on that plate must
+    # become tag=2 so the beam FEM sees the plate's applied forces.
+    # Plates that carry no load default untagged joints to tag=1 (support).
+    for p_idx in set(joint_plate.values()):
+        p_joints = [nid for nid, pi in joint_plate.items() if pi == p_idx]
+        has_loaded_joint = any(node_tags.get(nid, 0) == 2 for nid in p_joints)
+        untagged = [nid for nid in p_joints if node_tags.get(nid, 0) == 0]
+
+        if not untagged:
+            continue
+
+        if plate_has_loads.get(p_idx, False) and not has_loaded_joint:
+            # Plate carries loads but no joint inherited tag=2 →
+            # transfer load through untagged joints
+            for nid in untagged:
+                node_tags[nid] = 2
+        else:
+            # Plate is support-only, or loads already transferred →
+            # remaining untagged joints act as rigid support
+            for nid in untagged:
+                node_tags[nid] = 1
+
+    # Count how many joint nodes are now fixed (tag=1)
+    n_fixed_joints = sum(1 for nid in snapped_nodes if node_tags.get(nid, 0) == 1)
+    n_loaded_joints = sum(1 for nid in snapped_nodes if node_tags.get(nid, 0) == 2)
     print(f"    [Joints] Snapped {n_snapped} existing nodes, "
           f"created {n_new_joints} new junction nodes.")
+    print(f"    [Joints] Tags: {n_fixed_joints} fixed (plate support), "
+          f"{n_loaded_joints} loaded (plate load transfer), "
+          f"{len(snapped_nodes) - n_fixed_joints - n_loaded_joints} other")
 
     return nodes_dict, edges, node_tags, plates_data

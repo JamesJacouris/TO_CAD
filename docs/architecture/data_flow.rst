@@ -82,6 +82,34 @@ The ``history`` list contains per-voxel snapshots (type ``"voxels"``) and
 per-graph snapshots (type ``"graph"``).  The ``stages`` list contains the full
 geometry at each optimisation stage for the FreeCAD timeline feature.
 
+External mesh input: NPZ format
+---------------------------------
+
+When ``--mesh_input`` is given, the external STL/OBJ mesh is voxelised by
+:mod:`src.mesh_import.mesh_voxelizer` at the specified ``--mesh_pitch``.  The
+resulting NPZ contains only ``rho`` (binary, float32); no ``bc_tags`` are
+generated.  Downstream modules detect the absence of ``bc_tags`` and skip
+BC-related processing (no node tagging, no tagged-problem BCs).
+
+.. code-block:: python
+
+   np.savez(output_path,
+       rho=rho  # shape (nely, nelx, nelz), float32, binary {0.0, 1.0}
+   )
+
+Symmetry data flow
+--------------------
+
+When ``--symmetry`` is specified, the symmetry module
+(:mod:`src.optimization.symmetry`) operates on the extracted skeleton *before*
+optimisation Stages 2/3:
+
+1. Edges crossing the symmetry plane are split at the plane intersection.
+2. One half of the skeleton is retained.
+3. After optimisation, the result is reflected and merged back.
+4. Nodes on the symmetry plane are constrained in the plane-normal direction
+   during layout optimisation.
+
 BC tag propagation
 -------------------
 

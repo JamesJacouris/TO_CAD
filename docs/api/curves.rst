@@ -3,13 +3,17 @@
 Curves — ``src.curves``
 ========================
 
-Cubic Bézier curve utilities used for smooth beam visualisation.
+Cubic Bézier curve utilities used for smooth beam geometry and, optionally,
+curved-beam finite element analysis.
 
 .. note::
 
-   ``--curved`` controls geometry output only.  FEM analysis always uses
-   straight Euler-Bernoulli beams.  See
-   :ref:`architecture/algorithms:l-bfgs-b layout optimisation` for details.
+   When ``--curved`` is enabled, beams with significant curvature can use an
+   IGA Timoshenko element with cubic Bernstein shape functions.  Short or
+   straight beams continue to use standard Euler–Bernoulli elements.  Control
+   points are sanitised to enforce chord monotonicity and a perpendicular
+   bulge limit.  See :ref:`architecture/algorithms:curved beam element (iga timoshenko)` for
+   the formulation.
 
 .. automodule:: src.curves.spline
    :members:

@@ -94,76 +94,528 @@ def rotation_matrix(vec, roll=0.0):
     
     return T
 
-def solve_frame(nodes, edges, radii, E=1.0, nu=0.3, loads={}, bcs={}):
-    """Solve a 3-D Euler-Bernoulli frame under static loading.
 
-    Assembles the global stiffness matrix ``K`` from per-element local
-    stiffness matrices rotated into the global frame, applies Dirichlet BCs
-    by zeroing constrained rows/columns, and solves ``K_ff u_f = f_f`` with
-    ``scipy.sparse.linalg.spsolve``.
+# =========================================================================
+# Flat triangular shell element (MITC3 — membrane + bending, 6 DOF/node)
+# =========================================================================
+
+def _triangle_area_and_normal(v0, v1, v2):
+    """Return (area, unit_normal) for a triangle defined by three vertices."""
+    e1 = v1 - v0
+    e2 = v2 - v0
+    cross = np.cross(e1, e2)
+    twice_area = np.linalg.norm(cross)
+    if twice_area < 1e-30:
+        return 0.0, np.array([0.0, 0.0, 1.0])
+    return 0.5 * twice_area, cross / twice_area
+
+
+def compute_shell_rotation(v0, v1, v2):
+    """Build 3x3 rotation from local (x',y',z') to global (X,Y,Z).
+
+    Local frame::
+
+        x' = (v1-v0) / ||v1-v0||
+        z' = normal to the triangle
+        y' = z' x x'
+
+    Returns R such that ``v_global = R @ v_local``.
+    """
+    e1 = v1 - v0
+    L1 = np.linalg.norm(e1)
+    if L1 < 1e-14:
+        return np.eye(3)
+    xp = e1 / L1
+    e2 = v2 - v0
+    zp = np.cross(e1, e2)
+    Lz = np.linalg.norm(zp)
+    if Lz < 1e-14:
+        return np.eye(3)
+    zp /= Lz
+    yp = np.cross(zp, xp)
+    # R rows = local axes in global coords
+    R = np.array([xp, yp, zp])  # (3,3)
+    return R
+
+
+def compute_shell_element_stiffness(E, nu, thickness, v0, v1, v2):
+    """Compute 18x18 flat shell stiffness (membrane + plate bending).
+
+    Uses constant-strain triangle (CST) for membrane and discrete
+    Kirchhoff triangle (DKT-like) bending with 6 DOF per node
+    ``[u, v, w, theta_x, theta_y, theta_z]``.
+
+    The element is formulated in a local coordinate system aligned with
+    the triangle plane, then rotated to global coordinates.
+
+    Parameters
+    ----------
+    E : float — Young's modulus
+    nu : float — Poisson's ratio
+    thickness : float — shell thickness
+    v0, v1, v2 : (3,) arrays — triangle vertex positions (global coords)
+
+    Returns
+    -------
+    K_global : (18, 18) ndarray — element stiffness in global coordinates
+    """
+    v0, v1, v2 = np.asarray(v0, float), np.asarray(v1, float), np.asarray(v2, float)
+    area, _ = _triangle_area_and_normal(v0, v1, v2)
+    if area < 1e-20:
+        return np.zeros((18, 18))
+
+    h = max(thickness, 1e-6)
+
+    # Local coordinate system
+    R = compute_shell_rotation(v0, v1, v2)  # local→global
+
+    # Transform vertices to local coordinates
+    p0 = R @ v0
+    p1 = R @ v1
+    p2 = R @ v2
+
+    # Local 2D coordinates (z' ≈ constant for flat triangle)
+    x1, y1 = 0.0, 0.0
+    x2, y2 = p1[0] - p0[0], p1[1] - p0[1]
+    x3, y3 = p2[0] - p0[0], p2[1] - p0[1]
+
+    # ── Membrane stiffness (CST) ─────────────────────────────────
+    # Plane stress constitutive matrix
+    Dm = (E * h / (1.0 - nu**2)) * np.array([
+        [1.0, nu,  0.0],
+        [nu,  1.0, 0.0],
+        [0.0, 0.0, (1.0 - nu) / 2.0],
+    ])
+
+    # CST strain-displacement matrix (constant over element)
+    # B_m maps [u1,v1, u2,v2, u3,v3] → [eps_xx, eps_yy, gamma_xy]
+    det_J = (x2 * y3 - x3 * y2)
+    if abs(det_J) < 1e-20:
+        return np.zeros((18, 18))
+
+    inv_det = 1.0 / det_J
+    b1 = (y2 - y3) * inv_det
+    b2 = (y3 - y1) * inv_det
+    b3 = (y1 - y2) * inv_det
+    c1 = (x3 - x2) * inv_det
+    c2 = (x1 - x3) * inv_det
+    c3 = (x2 - x1) * inv_det
+
+    Bm = np.array([
+        [b1, 0,  b2, 0,  b3, 0],
+        [0,  c1, 0,  c2, 0,  c3],
+        [c1, b1, c2, b2, c3, b3],
+    ])
+
+    Km_local = area * (Bm.T @ Dm @ Bm)  # (6,6) in [u1,v1,u2,v2,u3,v3]
+
+    # ── Bending stiffness (simplified DKT) ────────────────────────
+    # Plate bending constitutive matrix
+    Db = (E * h**3 / (12.0 * (1.0 - nu**2))) * np.array([
+        [1.0, nu,  0.0],
+        [nu,  1.0, 0.0],
+        [0.0, 0.0, (1.0 - nu) / 2.0],
+    ])
+
+    # For a simplified flat-shell bending element, use the analogy with
+    # the CST membrane element but for curvatures:
+    # kappa_xx = -d²w/dx², kappa_yy = -d²w/dy², kappa_xy = -2 d²w/dxdy
+    # With linear interpolation of rotations theta_x, theta_y per node,
+    # we get a constant-curvature bending element.
+    # DOFs per node: [w, theta_x, theta_y] = [w, dw/dy, -dw/dx]
+    # Bb maps [w1,θx1,θy1, w2,θx2,θy2, w3,θx3,θy3] → [κ_xx, κ_yy, 2κ_xy]
+
+    # Using the standard linear triangle bending formulation:
+    # θx = dw/dy, θy = -dw/dx
+    # κ_xx = -dθy/dx = d²w/dx²  → use b_i for θy
+    # κ_yy = dθx/dy             → use c_i for θx
+    # κ_xy = dθx/dx - dθy/dy    → use b_i for θx, c_i for θy
+
+    Bb = np.zeros((3, 9))
+    # Node 1
+    Bb[0, 2] = -b1   # κ_xx from θy1
+    Bb[1, 1] = c1     # κ_yy from θx1
+    Bb[2, 1] = b1     # κ_xy from θx1
+    Bb[2, 2] = -c1    # κ_xy from θy1
+    # Node 2
+    Bb[0, 5] = -b2
+    Bb[1, 4] = c2
+    Bb[2, 4] = b2
+    Bb[2, 5] = -c2
+    # Node 3
+    Bb[0, 8] = -b3
+    Bb[1, 7] = c3
+    Bb[2, 7] = b3
+    Bb[2, 8] = -c3
+
+    Kb_local = area * (Bb.T @ Db @ Bb)  # (9,9) in [w1,θx1,θy1, ...]
+
+    # ── Assemble into 18x18 local shell stiffness ─────────────────
+    # Local DOF order per node: [u', v', w', θx', θy', θz']
+    # Membrane DOFs: u'(0), v'(1) → indices 0,1, 6,7, 12,13
+    # Bending DOFs: w'(2), θx'(3), θy'(4) → indices 2,3,4, 8,9,10, 14,15,16
+    # θz'(5) = drilling rotation → add small stiffness for stability
+
+    K_local = np.zeros((18, 18))
+
+    # Membrane: scatter Km_local (6x6) into K_local
+    mem_dofs = [0, 1, 6, 7, 12, 13]  # u',v' for nodes 0,1,2
+    for i in range(6):
+        for j in range(6):
+            K_local[mem_dofs[i], mem_dofs[j]] += Km_local[i, j]
+
+    # Bending: scatter Kb_local (9x9) into K_local
+    bend_dofs = [2, 3, 4, 8, 9, 10, 14, 15, 16]  # w',θx',θy' for nodes 0,1,2
+    for i in range(9):
+        for j in range(9):
+            K_local[bend_dofs[i], bend_dofs[j]] += Kb_local[i, j]
+
+    # Drilling DOF stabilisation (small diagonal stiffness)
+    drill_stiffness = 1e-3 * E * h * area  # scale with element
+    for n in range(3):
+        K_local[n * 6 + 5, n * 6 + 5] += drill_stiffness
+
+    # ── Rotate to global coordinates ──────────────────────────────
+    # Build 18x18 transformation: T = block_diag(R, R, R, R, R, R)
+    # Each 3x3 block rotates [u,v,w] or [θx,θy,θz]
+    T = np.zeros((18, 18))
+    Rt = R.T  # local→global = R^T (since R maps global→local as rows)
+    for b in range(6):
+        T[b*3:b*3+3, b*3:b*3+3] = Rt
+
+    K_global = T.T @ K_local @ T
+    K_global = 0.5 * (K_global + K_global.T)  # symmetrise
+    return K_global
+
+
+def compute_shell_element_stiffness_derivative(E, nu, thickness, v0, v1, v2):
+    """Compute dK_shell/d(thickness) for a flat triangular shell element.
+
+    Since the membrane stiffness scales as h and bending as h³,
+    dK/dh = K_membrane/h + 3*K_bending/h.
+
+    Returns (18, 18) ndarray.
+    """
+    v0, v1, v2 = np.asarray(v0, float), np.asarray(v1, float), np.asarray(v2, float)
+    area, _ = _triangle_area_and_normal(v0, v1, v2)
+    if area < 1e-20:
+        return np.zeros((18, 18))
+
+    h = max(thickness, 1e-6)
+
+    R = compute_shell_rotation(v0, v1, v2)
+    p0 = R @ v0
+    p1 = R @ v1
+    p2 = R @ v2
+
+    x1, y1 = 0.0, 0.0
+    x2, y2 = p1[0] - p0[0], p1[1] - p0[1]
+    x3, y3 = p2[0] - p0[0], p2[1] - p0[1]
+
+    det_J = (x2 * y3 - x3 * y2)
+    if abs(det_J) < 1e-20:
+        return np.zeros((18, 18))
+    inv_det = 1.0 / det_J
+
+    b1 = (y2 - y3) * inv_det
+    b2 = (y3 - y1) * inv_det
+    b3 = (y1 - y2) * inv_det
+    c1 = (x3 - x2) * inv_det
+    c2 = (x1 - x3) * inv_det
+    c3 = (x2 - x1) * inv_det
+
+    # ── Membrane derivative: dK_m/dh = K_m / h (linear in h) ─────
+    # Recompute Dm at unit thickness
+    Dm_unit = (E / (1.0 - nu**2)) * np.array([
+        [1.0, nu,  0.0],
+        [nu,  1.0, 0.0],
+        [0.0, 0.0, (1.0 - nu) / 2.0],
+    ])
+    Bm = np.array([
+        [b1, 0,  b2, 0,  b3, 0],
+        [0,  c1, 0,  c2, 0,  c3],
+        [c1, b1, c2, b2, c3, b3],
+    ])
+    dKm_local = area * (Bm.T @ Dm_unit @ Bm)  # dK_m/dh (constant)
+
+    # ── Bending derivative: dK_b/dh = 3h² * K_b_unit ─────────────
+    Db_unit = (E / (12.0 * (1.0 - nu**2))) * np.array([
+        [1.0, nu,  0.0],
+        [nu,  1.0, 0.0],
+        [0.0, 0.0, (1.0 - nu) / 2.0],
+    ])
+    Bb = np.zeros((3, 9))
+    Bb[0, 2] = -b1; Bb[1, 1] = c1; Bb[2, 1] = b1; Bb[2, 2] = -c1
+    Bb[0, 5] = -b2; Bb[1, 4] = c2; Bb[2, 4] = b2; Bb[2, 5] = -c2
+    Bb[0, 8] = -b3; Bb[1, 7] = c3; Bb[2, 7] = b3; Bb[2, 8] = -c3
+
+    dKb_local = area * 3.0 * h**2 * (Bb.T @ Db_unit @ Bb)  # (9,9)
+
+    # ── Scatter into 18x18 ────────────────────────────────────────
+    dK_local = np.zeros((18, 18))
+
+    mem_dofs = [0, 1, 6, 7, 12, 13]
+    for i in range(6):
+        for j in range(6):
+            dK_local[mem_dofs[i], mem_dofs[j]] += dKm_local[i, j]
+
+    bend_dofs = [2, 3, 4, 8, 9, 10, 14, 15, 16]
+    for i in range(9):
+        for j in range(9):
+            dK_local[bend_dofs[i], bend_dofs[j]] += dKb_local[i, j]
+
+    # Drilling derivative: d/dh of drill_stiffness = 1e-3 * E * area
+    drill_deriv = 1e-3 * E * area
+    for n in range(3):
+        dK_local[n * 6 + 5, n * 6 + 5] += drill_deriv
+
+    # Rotate to global
+    T = np.zeros((18, 18))
+    Rt = R.T
+    for b in range(6):
+        T[b*3:b*3+3, b*3:b*3+3] = Rt
+
+    dK_global = T.T @ dK_local @ T
+    dK_global = 0.5 * (dK_global + dK_global.T)
+    return dK_global
+
+
+def _fallback_mid_surface(plate):
+    """Generate a mid-surface triangulation from plate voxel centers.
+
+    Used when the reconstruction's alpha-shape / Delaunay mid-surface
+    extraction fails (e.g. coplanar/cocircular points).  Projects voxel
+    centers onto the plate's principal plane and triangulates in 2D.
+
+    Returns dict with 'vertices', 'triangles', 'mean_thickness', 'node_tags',
+    or None if insufficient points.
+    """
+    from scipy.spatial import Delaunay
+
+    voxels = plate.get("voxels", [])
+    if len(voxels) < 3:
+        return None
+
+    pts = np.array(voxels, dtype=float)
+    centroid = pts.mean(axis=0)
+    centered = pts - centroid
+
+    # PCA to find principal plane
+    cov = centered.T @ centered
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    # eigvals sorted ascending; eigvecs[:,0] = normal (smallest variance)
+    normal = eigvecs[:, 0]
+
+    # Project onto 2D plane (use eigvecs[:,1] and eigvecs[:,2] as axes)
+    ax1 = eigvecs[:, 1]
+    ax2 = eigvecs[:, 2]
+    pts_2d = np.column_stack([centered @ ax1, centered @ ax2])
+
+    # Add small jitter to break cocircular degeneracy
+    rng = np.random.RandomState(42)
+    pts_2d += rng.randn(*pts_2d.shape) * 1e-6
+
+    try:
+        tri = Delaunay(pts_2d)
+        triangles = tri.simplices.tolist()
+    except Exception:
+        return None
+
+    if len(triangles) == 0:
+        return None
+
+    h = plate.get("thickness", 1.0)
+    return {
+        "vertices": pts.tolist(),
+        "triangles": triangles,
+        "mean_thickness": h,
+        "node_tags": {},
+    }
+
+
+def _get_plate_mid_surface(plate):
+    """Get mid-surface data, using fallback triangulation if needed."""
+    ms = plate.get("mid_surface")
+    if ms is not None and len(ms.get("triangles", [])) > 0:
+        return ms
+    return _fallback_mid_surface(plate)
+
+
+def _build_plate_node_map(plates, n_beam_nodes, nodes, bcs, loads):
+    """Build a mapping from (plate_idx, local_vertex_idx) → global DOF node index.
+
+    Beam-plate joint nodes (listed in ``connection_node_ids``) reuse the
+    existing beam node index.  All other plate mid-surface vertices are
+    assigned new global node indices starting at ``n_beam_nodes``.
+
+    Loads and BCs are propagated to plate-only nodes based on:
+    1. ``node_tags`` from the mid-surface (tag=1 → fixed, tag=2 → loaded)
+    2. Fallback: infer from connection node membership in *bcs* / *loads*
+
+    For loaded plates, the total force from loaded connection nodes is
+    distributed equally across **all** plate nodes (connection + interior)
+    to simulate a distributed surface load.
+
+    Returns
+    -------
+    plate_node_map : list of ndarray
+        ``plate_node_map[p]`` is an int array of length ``n_verts_p`` mapping
+        each local vertex index to a global node index.
+    all_nodes : ndarray, shape (N_total, 3)
+        Expanded node array (beam nodes + new plate-only nodes).
+    plate_bcs : dict
+        ``{global_node_idx: [0,1,2,3,4,5]}`` for plate vertices needing BCs.
+    plate_loads : dict
+        ``{global_node_idx: load_vector}`` for plate vertices needing loads.
+    """
+    from scipy.spatial import cKDTree
+
+    extra_nodes = []
+    plate_node_map = []
+    plate_bcs = {}
+    plate_loads = {}
+    next_id = n_beam_nodes
+
+    for p_idx, plate in enumerate(plates):
+        ms = _get_plate_mid_surface(plate)
+        if ms is None:
+            plate_node_map.append(np.array([], dtype=int))
+            continue
+
+        verts = np.array(ms["vertices"])
+        n_v = len(verts)
+        local_to_global = np.full(n_v, -1, dtype=int)
+
+        # Joint nodes: match plate vertices to beam nodes by position
+        conn_ids = plate.get("connection_node_ids", [])
+        conn_ids = [c for c in conn_ids if c < n_beam_nodes]  # guard stale IDs
+        if len(conn_ids) > 0 and len(nodes) > 0:
+            beam_joint_pos = nodes[conn_ids]
+            tree = cKDTree(beam_joint_pos)
+            for vi in range(n_v):
+                dist, idx = tree.query(verts[vi], k=1)
+                if dist < 1e-3:  # close enough to be same node
+                    local_to_global[vi] = conn_ids[idx]
+
+        # Determine plate role from connection nodes' bcs/loads membership
+        conn_has_bc = [cid for cid in conn_ids if cid in bcs]
+        conn_has_load = [cid for cid in conn_ids if cid in loads]
+        plate_is_fixed = len(conn_has_bc) > 0
+        plate_is_loaded = len(conn_has_load) > 0
+
+        # Mid-surface node tags (tag=1 fixed, tag=2 loaded)
+        node_tags_ms = ms.get("node_tags", {})
+
+        # Remaining vertices get new global IDs
+        for vi in range(n_v):
+            if local_to_global[vi] < 0:
+                local_to_global[vi] = next_id
+                extra_nodes.append(verts[vi])
+
+                # Check mid-surface tag first
+                tag = node_tags_ms.get(str(vi)) or node_tags_ms.get(vi, 0)
+
+                if tag == 1 or (tag == 0 and plate_is_fixed and not plate_is_loaded):
+                    # Fixed plate: fix all DOFs for interior nodes
+                    plate_bcs[next_id] = [0, 1, 2, 3, 4, 5]
+
+                next_id += 1
+
+        plate_node_map.append(local_to_global)
+
+        # Loaded plates: interior nodes don't need external loads — they're
+        # mechanically connected to loaded connection nodes through shell
+        # stiffness.  The shell elements transfer load internally.
+        # No additional force distribution needed.
+
+    if len(extra_nodes) > 0:
+        all_nodes = np.vstack([nodes, np.array(extra_nodes)])
+    else:
+        all_nodes = nodes
+
+    return plate_node_map, all_nodes, plate_bcs, plate_loads
+
+
+def solve_frame(nodes, edges, radii, E=1.0, nu=0.3, loads={}, bcs={},
+                plates=None, plate_thicknesses=None):
+    """Solve a 3-D frame with optional shell plate elements.
+
+    Assembles the global stiffness matrix ``K`` from beam elements and
+    (optionally) triangular shell elements for plates.  Applies Dirichlet
+    BCs, solves ``K_ff u_f = f_f``, and returns displacements + compliance.
 
     Args:
-        nodes (numpy.ndarray): Node positions, shape ``(N, 3)``, mm.
-        edges (numpy.ndarray): Element connectivity, shape ``(M, 2)``,
-            integer node indices.
-        radii (numpy.ndarray): Circular cross-section radii per element,
-            shape ``(M,)``, mm.
-        E (float): Young's modulus (consistent units with nodes/radii).
-        nu (float): Poisson's ratio (used for shear modulus
-            ``G = E / (2(1+nu))``).
+        nodes (numpy.ndarray): Beam node positions, shape ``(N, 3)``, mm.
+        edges (numpy.ndarray): Beam element connectivity, shape ``(M, 2)``.
+        radii (numpy.ndarray): Beam cross-section radii, shape ``(M,)``, mm.
+        E (float): Young's modulus.
+        nu (float): Poisson's ratio.
         loads (dict): ``{node_idx: [Fx, Fy, Fz, Mx, My, Mz]}``.
-        bcs (dict): ``{node_idx: [dof_0, dof_1, …]}``, list of fixed DOF
-            indices (0–5 per node).
+        bcs (dict): ``{node_idx: [dof_0, dof_1, …]}``.
+        plates (list of dict or None): Plate data from reconstruction.
+            Each must have ``mid_surface`` with ``vertices``, ``triangles``,
+            ``thickness`` (or per-vertex via ``thickness_per_vertex``),
+            and ``connection_node_ids``.
+        plate_thicknesses (list of float or None): Override thickness per
+            plate for optimisation.  If None, uses plate's own thickness.
 
     Returns:
         tuple:
-            - **u** (``numpy.ndarray``, shape ``(N*6,)``): Full displacement
-              vector (translations + rotations per node).
-            - **compliance** (``float``): Structural compliance
-              ``c = f^T u`` (lower = stiffer).
-            - **f** (``numpy.ndarray``, shape ``(N*6,)``): Applied force
-              vector.
+            - **u** (ndarray): Full displacement vector.
+            - **compliance** (float): ``c = f^T u``.
+            - **elements** (list): Per-beam element data for gradients.
+            - **shell_elements** (list): Per-shell-triangle element data
+              (only present when plates are provided).
     """
-    n_nodes = len(nodes)
-    n_dof = n_nodes * 6
-    
-    # Initialize Sparse Matrix Builder
+    # ── Plate node mapping ────────────────────────────────────────
+    has_plates = plates is not None and len(plates) > 0
+    n_beam_nodes = len(nodes)
+
+    if has_plates:
+        plate_node_map, all_nodes, plate_bcs_extra, plate_loads_extra = \
+            _build_plate_node_map(plates, n_beam_nodes, nodes, bcs, loads)
+        # Merge plate BCs/loads with beam BCs/loads
+        merged_bcs = dict(bcs)
+        merged_bcs.update(plate_bcs_extra)
+        merged_loads = dict(loads)
+        merged_loads.update(plate_loads_extra)
+    else:
+        all_nodes = nodes
+        merged_bcs = bcs
+        merged_loads = loads
+        plate_node_map = []
+
+    n_nodes_total = len(all_nodes)
+    n_dof = n_nodes_total * 6
+
+    # ── Sparse matrix builder ─────────────────────────────────────
     I_idx, J_idx, V_val = [], [], []
-    
-    # Shear Modulus
     G = E / (2 * (1 + nu))
-    
-    # Element Data Storage (for efficient gradient calc later)
     elements = []
-    
+
+    # ── Beam elements ─────────────────────────────────────────────
     for e_i, (u, v) in enumerate(edges[:, :2]):
         u, v = int(u), int(v)
-        p1, p2 = nodes[u], nodes[v]
+        p1, p2 = all_nodes[u], all_nodes[v]
         vec = p2 - p1
         L = np.linalg.norm(vec)
-        
-        if L < 1e-6: continue
-        
+        if L < 1e-6:
+            continue
+
         r = radii[e_i]
         A = np.pi * r**2
         Iy = Iz = np.pi * r**4 / 4
         J = np.pi * r**4 / 2
-        
-        # Local Stiffness
+
         k_local = compute_element_stiffness(E, A, Iy, Iz, J, G, L)
-        
-        # Rotation
         T = rotation_matrix(vec)
-        
-        # Global Stiffness: K = T.T * k * T
         k_global = T.T @ k_local @ T
-        
-        # Assemble
+
         dof_indices = np.concatenate([
             np.arange(u*6, u*6+6),
             np.arange(v*6, v*6+6)
         ])
-        
+
         for r_i in range(12):
             for c_j in range(12):
                 val = k_global[r_i, c_j]
@@ -171,50 +623,149 @@ def solve_frame(nodes, edges, radii, E=1.0, nu=0.3, loads={}, bcs={}):
                     I_idx.append(dof_indices[r_i])
                     J_idx.append(dof_indices[c_j])
                     V_val.append(val)
-                    
-        # Store for compliance tracking
+
         elements.append({
             'k_global': k_global,
             'dofs': dof_indices
         })
-                    
-    # Build K
-    K_global = sp.coo_matrix((V_val, (I_idx, J_idx)), shape=(n_dof, n_dof)).tocsc()
-    
-    # Load Vector
+
+    # ── Shell elements (plates) ───────────────────────────────────
+    shell_elements = []
+    n_shell_tris = 0
+
+    if has_plates:
+        for p_idx, plate in enumerate(plates):
+            ms = _get_plate_mid_surface(plate)
+            if ms is None:
+                continue
+
+            verts = np.array(ms["vertices"])
+            tris = ms["triangles"]
+            node_map = plate_node_map[p_idx]
+            if len(node_map) == 0:
+                continue
+
+            # Determine thickness
+            if plate_thicknesses is not None and p_idx < len(plate_thicknesses):
+                h = plate_thicknesses[p_idx]
+            else:
+                h = plate.get("thickness", ms.get("mean_thickness", 1.0))
+            h = max(h, 1e-3)
+
+            for tri in tris:
+                i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+                if max(i0, i1, i2) >= len(verts):
+                    continue
+
+                g0 = node_map[i0]
+                g1 = node_map[i1]
+                g2 = node_map[i2]
+
+                v0 = all_nodes[g0]
+                v1 = all_nodes[g1]
+                v2 = all_nodes[g2]
+
+                k_shell = compute_shell_element_stiffness(E, nu, h, v0, v1, v2)
+
+                dof_indices = np.concatenate([
+                    np.arange(g0*6, g0*6+6),
+                    np.arange(g1*6, g1*6+6),
+                    np.arange(g2*6, g2*6+6),
+                ])
+
+                for r_i in range(18):
+                    for c_j in range(18):
+                        val = k_shell[r_i, c_j]
+                        if abs(val) > 1e-12:
+                            I_idx.append(dof_indices[r_i])
+                            J_idx.append(dof_indices[c_j])
+                            V_val.append(val)
+
+                shell_elements.append({
+                    'k_global': k_shell,
+                    'dofs': dof_indices,
+                    'plate_idx': p_idx,
+                    'thickness': h,
+                    'vertex_global_ids': (g0, g1, g2),
+                })
+                n_shell_tris += 1
+
+        if n_shell_tris > 0:
+            print(f"     [FEA] Assembled {n_shell_tris} shell triangles "
+                  f"from {len(plates)} plate(s)")
+
+    # ── Build K ───────────────────────────────────────────────────
+    K_global = sp.coo_matrix(
+        (V_val, (I_idx, J_idx)), shape=(n_dof, n_dof)).tocsc()
+
+    # ── Load vector ───────────────────────────────────────────────
     F_global = np.zeros(n_dof)
-    for n_id, load in loads.items():
-        # load can be size 3 (Force) or 6 (Moment)
+    for n_id, load in merged_loads.items():
         start = n_id * 6
         for i, val in enumerate(load):
-             if i < 6: F_global[start + i] += val
-             
-    # Apply BCs (Penalty Method or Partitioning)
-    # Using simple partitioning (masking free DOFs)
+            if i < 6:
+                F_global[start + i] += val
+
+    # ── Apply BCs ─────────────────────────────────────────────────
     fixed_dofs = []
-    for n_id, dofs in bcs.items():
+    for n_id, dofs in merged_bcs.items():
         base = n_id * 6
         for d in dofs:
             fixed_dofs.append(base + d)
-            
-    fixed_dofs = np.array(fixed_dofs)
+
+    fixed_dofs = np.array(fixed_dofs) if len(fixed_dofs) > 0 else np.array([], dtype=int)
     free_dofs = np.setdiff1d(np.arange(n_dof), fixed_dofs)
-    
-    # Solve Reduced System
+
+    # ── Solve ─────────────────────────────────────────────────────
     K_free = K_global[free_dofs, :][:, free_dofs]
     F_free = F_global[free_dofs]
-    
-    print(f"     [FEA] Solving System with {len(free_dofs)} DOFs...")
+
+    # Stabilise zero-stiffness DOFs (common with shell drilling DOFs
+    # or plate-only nodes connected to a single degenerate triangle)
+    if has_plates:
+        diag = np.array(K_free.diagonal()).ravel()
+        zero_diag = np.where(np.abs(diag) < 1e-12)[0]
+        if len(zero_diag) > 0:
+            # Add small stiffness to prevent singularity
+            stab = max(np.max(np.abs(diag)) * 1e-6, 1e-3)
+            stab_diag = sp.lil_matrix(K_free.shape, dtype=float)
+            for zd in zero_diag:
+                stab_diag[zd, zd] = stab
+            K_free = K_free + stab_diag.tocsc()
+            print(f"     [FEA+Shell] Stabilised {len(zero_diag)} zero-stiffness DOFs")
+
+    label = "[FEA]" if not has_plates else "[FEA+Shell]"
+    print(f"     {label} Solving system with {len(free_dofs)} DOFs "
+          f"({len(elements)} beams, {n_shell_tris} shells)...")
     u_free = scipy.sparse.linalg.spsolve(K_free, F_free)
-    
-    # Full Displacement Vector
+
     u_total = np.zeros(n_dof)
     u_total[free_dofs] = u_free
-    
-    # Compute Compliance
+
     compliance = np.dot(F_global, u_total)
-    
+
+    if has_plates:
+        return u_total, compliance, elements, shell_elements
     return u_total, compliance, elements
+
+
+def compute_beam_strain_energy(u, elements):
+    """Compute per-beam strain energy from solve_frame outputs.
+
+    Args:
+        u: (N*6,) full displacement vector from solve_frame.
+        elements: list of {'k_global', 'dofs'} from solve_frame.
+
+    Returns:
+        numpy.ndarray: (M,) per-beam strain energy (u_e^T K_e u_e).
+    """
+    se = np.zeros(len(elements))
+    for i, elem in enumerate(elements):
+        dofs = elem['dofs']
+        u_e = u[dofs]
+        se[i] = u_e @ elem['k_global'] @ u_e
+    return se
+
 
 def compute_element_stiffness_derivative(E, r, L, nu):
     """
@@ -292,6 +843,49 @@ def compute_frame_gradients(nodes, edges, radii, u_total, E=1.0, nu=0.3):
         
         term = u_elem.T @ dK_global @ u_elem
         gradients[i] = -term
+
+    return gradients
+
+
+def compute_shell_thickness_gradients(plates, plate_thicknesses, shell_elements,
+                                       all_nodes, u_total, E=1.0, nu=0.3):
+    """Compute dC/d(thickness) for each plate.
+
+    Each plate has a single thickness variable.  The gradient is the sum
+    of per-triangle sensitivities for all triangles belonging to that plate:
+
+        dC/dh_p = - sum_{tri in plate_p} u_tri^T (dK_tri/dh) u_tri
+
+    Parameters
+    ----------
+    plates : list of dict — plate data (for indexing)
+    plate_thicknesses : list of float — current thickness per plate
+    shell_elements : list of dict — from solve_frame (shell_elements output)
+    all_nodes : ndarray — expanded node array (beam + plate nodes)
+    u_total : ndarray — full displacement vector from solve_frame
+    E, nu : material properties
+
+    Returns
+    -------
+    gradients : ndarray, shape (n_plates,) — dC/dh per plate
+    """
+    n_plates = len(plates)
+    gradients = np.zeros(n_plates)
+
+    for se in shell_elements:
+        p_idx = se['plate_idx']
+        h = se['thickness']
+        dofs = se['dofs']
+        g0, g1, g2 = se['vertex_global_ids']
+
+        v0 = all_nodes[g0]
+        v1 = all_nodes[g1]
+        v2 = all_nodes[g2]
+
+        u_e = u_total[dofs]
+
+        dK = compute_shell_element_stiffness_derivative(E, nu, h, v0, v1, v2)
+        gradients[p_idx] += -(u_e @ dK @ u_e)
 
     return gradients
 

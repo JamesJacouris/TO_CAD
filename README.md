@@ -85,14 +85,27 @@ python run_pipeline.py \
 ### Best Params for 150x50x4 Cantilever
     python run_pipeline.py \
     --nelx 150 --nely 40 --nelz 4 \
+    --skip_top3d \
+    --top3d_npz output/hybrid_v2/matlab_replicated_top3d.npz \
     --volfrac 0.3 --penal 3.0 --rmin 3.0 --max_loop 100 \
     --load_x 150 --load_y 20 --load_z 2 \
     --load_fx 0.0 --load_fy -100.0 --load_fz 0.0 \
     --prune_len 4.15 --collapse_thresh 3.84 --rdp 0.78 --radius_mode uniform \
     --limit 5.0 --snap 5.0 --visualize \
-    --output "matlab_replicated.json"
+    --render_upsample 4 \
+    --output "matlab_replicated_23_march.json"
 
     --skip_top3d \
+
+
+  python run_pipeline.py \
+    --nelx 150 --nely 40 --nelz 4 \
+    --load_x 150 --load_y 20 --load_z 2 \
+    --load_fx 0.0 --load_fy -100.0 --load_fz 0.0 \
+    --prune_len 4.15 --collapse_thresh 3.84 --rdp 0.78 --radius_mode uniform \
+    --limit 5.0 --snap 5.0 --visualize \
+    --export_stl \
+    --output "matlab_replicated_New_E.json"
 
 # Run 100 trials (~3-5 minutes)
 python tune_parameters.py output/hybrid_v2/matlab_replicated_top3d.npz --trials 100
@@ -420,7 +433,7 @@ python run_pipeline.py \
   --skip_top3d \
   --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
   --hybrid \
-  --curved \
+  --beam_mode curved \
   --min_plate_size 8 \
   --flatness_ratio 7 \
   --junction_thresh 4 \
@@ -501,7 +514,7 @@ python run_pipeline.py \
   --skip_top3d \
   --top3d_npz output/l_bracket_top3d.npz \
   --nelx 40 --nely 10 --nelz 40 \
-  --curved --optimize --opt_loops 2 \
+  --beam_mode curved --optimize --opt_loops 2 \
   --r_min 0.5 --limit 5.0 --ctrl_limit 2.0 \
   --visualize \
   --output output/l_bracket_curved.json
@@ -547,3 +560,427 @@ python run_pipeline.py \
   --r_min 0.5 --limit 5.0 --ctrl_limit 2.0 \
   --visualize \
   --output output/vault_curved.json
+
+
+
+# Beam Mode CHANGE - NEW FLAG
+
+Here's the summary:
+
+--beam_mode replaces the old --curved flag with three clear options:
+
+
+## All straight (default) — standard Euler-Bernoulli, no Bézier
+python run_pipeline.py --beam_mode straight --output result.json
+
+## All curved — every edge gets Bézier ctrl_pts (previous --curved behaviour)
+python run_pipeline.py --beam_mode curved --output result.json
+
+## Mixed — per-edge classification based on skeleton curvature
+python run_pipeline.py --beam_mode mixed --output result.json
+
+## Mixed with custom threshold
+python run_pipeline.py --beam_mode mixed --curve_threshold 1.0 --output result.json
+The old --curved flag still works as a backwards-compatible alias for --beam_mode curved.
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --hybrid \
+  --beam_mode mixed \
+  --geo_reg 1.5 \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --junction_thresh 4 \
+  --min_avg_neighbors 3 \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --radius_mode uniform \
+  --optimize \
+  --opt_loops 2 \
+  --visualize \
+  --output hybrid_iga.json
+
+
+
+
+
+
+
+
+python run_pipeline.py \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --skip_top3d \
+  --visualize \
+  --beam_mode mixed \
+  --output Roof_Structure_strict_Mixed_Beams.json \
+  --pitch 1.0 \
+  --max_iters 50 \
+  --vol_thresh 0.3 \
+  --plate_thickness_ratio 0.15 \
+  --detect_plates \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --junction_thresh 4 \
+  --min_avg_neighbors 3 \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --optimize \
+  --opt_loops 2 \
+  --radius_mode uniform
+
+
+
+
+
+python run_pipeline.py \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --skip_top3d \
+  --visualize \
+  --beam_mode straight \
+  --hybrid \
+  --output Roof_Structure_Hybrid_Beams_SURFACES_V1.json \
+  --pitch 1.0 \
+  --max_iters 50 \
+  --vol_thresh 0.3 \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --radius_mode uniform
+
+
+
+  # Curved Cases
+
+
+# Generate topology - NOT WORKING BAD
+python run_top3d.py --problem curved_shell --nelx 40 --nely 10 --nelz 20 \
+  --volfrac 0.10 --rmin 2.0 --max_loop 80 \
+  --output output/hybrid_v2/curved_shell_top3d.npz
+
+# Reconstruct with hybrid pipeline
+python run_pipeline.py --skip_top3d \
+  --top3d_npz output/hybrid_v2/curved_shell_top3d.npz \
+  --hybrid --output curved_shell_hybrid.json --visualize
+
+
+
+
+
+
+
+# Pipe Bracket
+  The pipe bracket problem is implemented. Here's a summary of what was added to run_top3d.py:
+
+Problem: pipe_bracket (Yin's paper, Section 5.3)
+
+Parameter	Value	Scaling
+Domain	120 x 60 x 40 (nelx x nely x nelz)	User-configurable
+Cylinder R	18 (0.3 * nely)	Scales with height
+Pipe 1 centre	(36, 30) = (0.3*nelx, nely/2)	Scales with domain
+Pipe 2 centre	(84, 30) = (0.7*nelx, nely/2)	Scales with domain
+Fixed	4 vertical corner edges (all Y)	244 nodes at full res
+Loads	4 cardinal pts per pipe, F=100 each (-Y)	8 support points total
+Passive voids	Two through-Z cylinders	~28% of domain
+To run at paper resolution:
+
+
+python run_top3d.py \
+  --problem pipe_bracket \
+  --nelx 120 --nely 60 --nelz 40 \
+  --volfrac 0.10 --rmin 3.0 --penal 3.0 \
+  --max_loop 100 \
+  --output output/hybrid_v2/pipe_bracket_top3d.npz
+
+
+For faster testing (8x fewer elements):
+
+
+python run_top3d.py \
+  --problem pipe_bracket \
+  --nelx 60 --nely 30 --nelz 20 \
+  --volfrac 0.10 --rmin 3.0 \
+  --max_loop 100 \
+  --output output/hybrid_v2/pipe_bracket_test_top3d.npz
+
+RUN IT:
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/pipe_bracket_test_top3d.npz \
+  --nelx 60 --nely 30 --nelz 20 \
+  --load_fy -800 \
+  --volfrac 0.10 \
+  --beam_mode mixed \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --radius_mode uniform \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --optimize \
+  --opt_loops 2 \
+  --output pipe_bracket_test.json \
+  --visualize
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/pipe_bracket_test_top3d.npz \
+  --nelx 60 --nely 30 --nelz 20 \
+  --load_fy -800 \
+  --volfrac 0.10 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --radius_mode uniform \
+  --prune_len 5.0 \
+  --collapse_thresh 2.0 \
+  --optimize \
+  --opt_loops 2 \
+  --output pipe_bracket_test.json \
+  --visualize
+
+The cylinder parameters, support positions, and load points all scale proportionally, so reduced resolution will produce the same topology at lower fidelity.
+
+
+
+WORKING BIG PIPE BRACKET
+
+python run_top3d.py \
+  --problem pipe_bracket \
+  --nelx 120 --nely 60 --nelz 40 \
+  --volfrac 0.10 --rmin 3.0 --penal 3.0 \
+  --max_loop 100 \
+  --output output/hybrid_v2/pipe_bracket_full_top3d.npz
+This will take a while (~288K elements), but it should produce a topology where:
+
+The pipes have R=18 in height=60 — leaving 12 elements above/below each pipe
+The upper arches are 3-4 voxels thick — proper structural members, not fragile 1-voxel chains
+The skeleton will naturally connect without needing bridge edges
+Once it finishes, the pipeline will auto-read the load vector from the NPZ:
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/pipe_bracket_full_top3d.npz \
+  --nelx 120 --nely 60 --nelz 40 \
+  --volfrac 0.10 \
+  --hybrid \
+  --beam_mode straight \
+  --rdp 1.0 --snap 5.0 \
+  --radius_mode uniform \
+  --prune_len 1.0 --collapse_thresh 1.0 \
+  --output pipe_bracket_full.json \
+  --visualize
+
+
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/pipe_bracket_full_top3d.npz \
+  --snap 10.0 --collapse_thresh 10.0 --prune_len 10.0 --rdp 2.0 \
+  --r_min 0.5 --r_max 8.0 \
+  --opt_loops 2 --iters 50 \
+  --beam_mode mixed \
+  --output pipe_bracket_optimal_mixed_beams.json
+
+  ### Hybrid Pipe Bracket
+
+  python run_pipeline.py --skip_top3d \
+  --top3d_npz output/hybrid_v2/pipe_bracket_full_top3d.npz \
+  --hybrid --optimize --opt_loops 2 \
+  --snap 2.0 --r_min 0.5 --r_max 8.0 --rdp 2.0 \
+  --min_plate_size 2 --flatness_ratio 20.0 --min_avg_neighbors 2.0 \
+  --visualize \
+  --output pipe_bracket_hybrid_optimal.json
+
+
+
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d_TEST_20_MARCH.npz\
+  --hybrid \
+  --output Clear_Test_strict_V2.json \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --min_avg_neighbors 3 \
+  --visualize
+
+
+
+
+
+python run_pipeline.py \
+  --problem roof \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d_TEST_10am.npz \
+  --nelx 40 --nely 40 --nelz 20 \
+  --volfrac 0.08 --penal 3.0 --rmin 1.5 \
+  --max_loop 100 \
+  --load_fz -1.0 \
+  --visualize \
+  --hybrid \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --min_avg_neighbors 3 \
+  --optimize \
+  --opt_loops 2 \
+  --output output/hybrid_v2/Clear_Beam_Plate_Test_top3d_TEST_10am.npz
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Generate NPZ:
+python run_top3d.py \
+  --problem roof \
+  --nelx 40 --nely 40 --nelz 20 \
+  --volfrac 0.05 --penal 3.0 --rmin 1.5 \
+  --max_loop 100 \
+  --output output/hybrid_v2/Roof_Structure_Test_top3d.npz
+
+# Reconstruct (your existing command):
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Roof_Structure_Test_top3d.npz \
+  --hybrid \
+  --output Roof_Structure_strict.json \
+  --min_plate_size 8 --flatness_ratio 7 --min_avg_neighbors 3 \
+  --optimize \
+  --opt_loops 2 \
+  --visualize
+
+
+
+
+  FOR THE BEAM SUPPORTED PLATE TOP3D:
+
+  python tests/test_hybrid_clear.py
+
+  python run_pipeline.py --skip_top3d --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d.npz --hybrid --output Clear_Test.json --visualize
+
+
+
+
+# CORRECT BEAM SUPPORTED PLATE TO CLI: 
+
+python run_top3d.py \
+  --problem roof \
+  --nelx 40 --nely 40 --nelz 20 \
+  --volfrac 0.05 --penal 3.0 --rmin 1.5 \
+  --max_loop 200 \
+  --load_fx 0.0 --load_fy 0.0 --load_fz -5.0 \
+  --output output/hybrid_v2/Clear_Beam_Plate_Test_top3d_0.05_VF.npz
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d_0.05_VF.npz \
+  --beam_mode mixed \
+  --output Clear_Beam_Plate_Test_top3d_0.05_VF.json \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --min_avg_neighbors 3 \
+  --snap 1.5 \
+  --prune_len 1.5 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --optimize \
+  --symmetry xz,yz --sym_weight 0.1 \
+  --opt_loops 2
+
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d_0.05_VF.npz \
+  --beam_mode straight \
+  --output Clear_Beam_Plate_Test_top3d_0.05_VF_NOT_HYBRID.json \
+  --snap 1.5 \
+  --prune_len 1.5 \
+  --collapse_thresh 0.0 \
+  --rdp 1.0 
+
+
+
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d_LOWER_VF.npz \
+  --hybrid \
+  --beam_mode straight \
+  --output Clear_Test_LOWER_VF.json \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --min_avg_neighbors 3 \
+  --snap 1.5 \
+  --prune_len 1.5 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --optimize \
+  --opt_loops 2 
+  --visualize
+
+
+
+
+
+
+
+python run_pipeline.py \
+  --skip_top3d \
+  --top3d_npz output/hybrid_v2/Clear_Beam_Plate_Test_top3d.npz \
+  --beam_mode straight \
+  --hybrid \
+  --output Frame_Supported_Plate_March_26.json \
+  --min_plate_size 8 \
+  --flatness_ratio 7 \
+  --min_avg_neighbors 3 \
+  --prune_len 2.0 \
+  --collapse_thresh 2.0 \
+  --rdp 2.0 \
+  --snap 5.0 \
+  --optimize \
+  --opt_loops 2
+
+
+
+# ELEVATED SLAB -  Top3D (already done — NPZ exists)
+python run_top3d.py --problem elevated_slab \
+    --nelx 40 --nely 40 --nelz 30 \
+    --volfrac 0.15 --rmin 1.5 --max_loop 80 \
+    --output output/hybrid_v2/elevated_slab_v3_top3d.npz
+
+# Hybrid pipeline
+python run_pipeline.py --skip_top3d \
+    --top3d_npz output/hybrid_v2/elevated_slab_v3_top3d.npz \
+    --nelx 40 --nely 40 --nelz 30 --volfrac 0.15 \
+    --hybrid --output Elevated_Slab_Final.json \
+    --optimize --opt_loops 2 
+
+

@@ -1,12 +1,29 @@
 """
-FreeCAD Macro: Hybrid Beam-Plate Reconstruction (Stable Version)
-Crash-resistant version with proper error handling and batching.
-Includes history visualization, pipeline stages, and final geometry.
+FreeCAD macro for hybrid beam-plate CAD reconstruction.
 
-Curved beam support: if a curve entry contains 'ctrl_pts' (two interior
-cubic Bézier control points), the beam is reconstructed as a smooth
-swept tube using Part.BezierCurve + makePipeShell instead of the
-ball-and-stick polyline approximation used for straight beams.
+Reads the pipeline JSON (containing graph, curves, plates, and history
+stages) and creates 3-D parametric geometry inside a FreeCAD document.
+
+Geometry created
+~~~~~~~~~~~~~~~~
+- **Straight beams**: swept circular tubes with hemispherical end caps,
+  coloured by a radius heatmap (blue → green → yellow → red).
+- **Curved beams**: ``Part.BezierCurve`` piped through the cross-section
+  circle when ``ctrl_pts`` entries are present.
+- **Plates**: extruded voxel polygons or offset mid-surface shells for
+  curved plates (inner/outer surfaces + stitched boundary edges).
+- **Fused body**: batched ``multiFuse`` (groups of 30) followed by
+  ``removeSplitter()`` of all beam and plate shapes, producing a single
+  ``Fused_Body`` solid suitable for STEP export.
+- **History timeline**: one FreeCAD group per pipeline stage for
+  before/after comparison.
+- **Density legend**: 10 coloured reference cubes (red → green) for the
+  initial-voxels stage.
+
+Usage
+~~~~~
+Open FreeCAD → Macro → Macros… → select this file → Execute.
+A file-picker dialog opens; select the ``<name>_history.json`` file.
 """
 
 import FreeCAD
@@ -110,6 +127,41 @@ def _sanitize_ctrl_pts_freecad(p0, p1, p2, p3, max_bulge_ratio=0.2):
     return p1_safe, p2_safe
 
 
+def _make_cylinder_between(p0, p3, radius):
+    """Create a cylinder + endpoint spheres between two points.
+
+    Robust fallback for curved beam creation — always produces valid
+    geometry as long as the two endpoints are distinct (> 1e-4 apart).
+
+    Returns list of Part.Shape, or empty list if points coincide.
+    """
+    vec = p3 - p0
+    height = vec.Length
+    if height < 1e-4:
+        return []
+
+    cyl = Part.makeCylinder(radius, height)
+    z_axis = Vector(0, 0, 1)
+    direction = vec.normalize()
+    angle = z_axis.getAngle(direction)
+
+    if abs(angle) < 1e-5:
+        rot = FreeCAD.Rotation()
+    elif abs(angle - math.pi) < 1e-5:
+        rot = FreeCAD.Rotation(Vector(1, 0, 0), 180)
+    else:
+        rot = FreeCAD.Rotation(z_axis, direction)
+    cyl.Placement = FreeCAD.Placement(p0, rot)
+
+    shapes = [cyl]
+    for pt in (p0, p3):
+        try:
+            shapes.append(Part.makeSphere(radius, pt))
+        except Exception:
+            pass
+    return shapes
+
+
 def create_curved_beam_sweep(p0, p1, p2, p3, radius):
     """
     Create a solid swept tube along a cubic Bézier curve.
@@ -131,6 +183,16 @@ def create_curved_beam_sweep(p0, p1, p2, p3, radius):
     -------
     list of Part.Shape  (single element on success, may be empty on total failure)
     """
+    chord = (p3 - p0).Length
+
+    # Very short beam — skip Bézier entirely, just make a cylinder
+    if chord < 0.5:
+        return _make_cylinder_between(p0, p3, radius)
+
+    # Radius too large relative to chord — sweep will self-intersect
+    if radius > chord * 0.4:
+        return _make_cylinder_between(p0, p3, radius)
+
     # Sanitize interior control points to prevent looping sweep paths
     p1, p2 = _sanitize_ctrl_pts_freecad(p0, p1, p2, p3)
 
@@ -167,35 +229,15 @@ def create_curved_beam_sweep(p0, p1, p2, p3, radius):
                     pass
             return shapes
         else:
-            FreeCAD.Console.PrintWarning("  Curved sweep: result invalid, falling back\n")
+            FreeCAD.Console.PrintWarning("  Curved sweep: result invalid, falling back to cylinder\n")
 
     except Exception as e:
         FreeCAD.Console.PrintWarning(f"  Curved sweep failed: {str(e)[:60]}, using cylinder\n")
 
     # Fallback: straight cylinder along the chord p0→p3
     try:
-        vec = p3 - p0
-        height = vec.Length
-        if height > 1e-4:
-            cyl = Part.makeCylinder(radius, height)
-            z_axis = Vector(0, 0, 1)
-            direction = vec.normalize()
-            angle = z_axis.getAngle(direction)
-            if abs(angle) < 1e-5:
-                rot = FreeCAD.Rotation()
-            elif abs(angle - math.pi) < 1e-5:
-                rot = FreeCAD.Rotation(Vector(1, 0, 0), 180)
-            else:
-                rot = FreeCAD.Rotation(z_axis, direction)
-            cyl.Placement = FreeCAD.Placement(p0, rot)
-            shapes = [cyl]
-            for pt in (p0, p3):
-                try:
-                    shapes.append(Part.makeSphere(radius, pt))
-                except Exception:
-                    pass
-            return shapes
-    except:
+        return _make_cylinder_between(p0, p3, radius)
+    except Exception:
         pass
 
     return []
@@ -389,17 +431,21 @@ def create_voxelized_geometry(voxel_centers, voxel_size):
 
 def create_bspline_surface_from_data(bspline_data, thickness=0.0):
     """
-    Yin's Medial Surface Reconstruction:
-    Creates a Part.BSplineSurface from a pre-fitted control grid,
-    then optionally offsets it to create a manifold solid.
+    Create a Part.BSplineSurface from a pre-fitted control grid,
+    then optionally offset it to create a manifold solid.
 
-    bspline_data: dict with keys:
-        'ctrl_grid': list[list[[x,y,z]]]  — NxM grid of 3D points
-        'degree_u': int (default 3)
-        'degree_v': int (default 3)
-    thickness: float — plate thickness for offset (0 = surface only)
-    
-    Returns: Part.Shape (solid if offset succeeds, face otherwise) or None
+    Parameters
+    ----------
+    bspline_data : dict
+        Dict with keys ``'ctrl_grid'`` (NxM grid of [x,y,z] points),
+        ``'degree_u'`` (int, default 3), ``'degree_v'`` (int, default 3).
+    thickness : float
+        Plate thickness for offset (0 = surface only).
+
+    Returns
+    -------
+    Part.Shape or None
+        Solid if offset succeeds, face otherwise, or None on failure.
     """
     try:
         grid = bspline_data.get('ctrl_grid', [])
@@ -876,9 +922,7 @@ def import_hybrid_json(json_path=None):
                                 hist_root.addObject(obj)
 
                                 obj.ViewObject.ShapeColor = (0.7, 0.7, 0.7)
-                                if "Skeleton" in step_name:
-                                    obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0)
-                                elif "Initial" in step_name:
+                                if "Initial" in step_name:
                                     obj.ViewObject.Transparency = 80
 
                     except Exception as e:
@@ -910,14 +954,41 @@ def import_hybrid_json(json_path=None):
                         node_obj.ViewObject.ShapeColor = (0.5, 0.5, 0.5)
                         grp.addObject(node_obj)
 
-                    # Draw Edges
+                    # Determine edge color for this step
+                    if "Raw" in step_name:
+                        edge_color = (1.0, 0.0, 0.0)
+                    elif "Collapse" in step_name:
+                        edge_color = (1.0, 0.5, 0.0)
+                    elif "Pruned" in step_name:
+                        edge_color = (0.0, 0.0, 1.0)
+                    elif "Simplified" in step_name:
+                        edge_color = (0.0, 1.0, 1.0)
+                    else:
+                        edge_color = (1.0, 1.0, 1.0)
+
+                    # For Simplified_RDP and Smoothed_Curves: individual edge objects for editability
+                    # For other steps: batch into a single compound for performance
+                    individual_edges = "Simplified" in step_name or "Smoothed" in step_name
+
                     edge_lines = []
                     for e_i, edge in enumerate(h_edges):
                         try:
                             u, v_idx = int(edge[0]), int(edge[1])
                             pts = edge[3] if len(edge) >= 4 else []
+                            ctrl = edge[4] if len(edge) >= 5 else None
+                            segments = []
 
-                            if pts:
+                            if ctrl and u < len(h_nodes) and v_idx < len(h_nodes):
+                                # Bézier curve from ctrl_pts
+                                pv0 = Vector(h_nodes[u][0], h_nodes[u][1], h_nodes[u][2])
+                                pv1 = Vector(ctrl[0][0], ctrl[0][1], ctrl[0][2])
+                                pv2 = Vector(ctrl[1][0], ctrl[1][1], ctrl[1][2])
+                                pv3 = Vector(h_nodes[v_idx][0], h_nodes[v_idx][1], h_nodes[v_idx][2])
+                                pv1, pv2 = _sanitize_ctrl_pts_freecad(pv0, pv1, pv2, pv3)
+                                bezier = Part.BezierCurve()
+                                bezier.setPoles([pv0, pv1, pv2, pv3])
+                                segments.append(bezier.toShape())
+                            elif pts:
                                 # Polyline
                                 for k in range(len(pts) + 1):
                                     if k == 0:
@@ -934,7 +1005,7 @@ def import_hybrid_json(json_path=None):
                                         Vector(p_start[0], p_start[1], p_start[2]),
                                         Vector(p_end[0], p_end[1], p_end[2])
                                     )
-                                    edge_lines.append(line)
+                                    segments.append(line)
                             elif u < len(h_nodes) and v_idx < len(h_nodes):
                                 # Straight line
                                 p1 = h_nodes[u]
@@ -943,28 +1014,26 @@ def import_hybrid_json(json_path=None):
                                     Vector(p1[0], p1[1], p1[2]),
                                     Vector(p2[0], p2[1], p2[2])
                                 )
-                                edge_lines.append(line)
+                                segments.append(line)
+
+                            if individual_edges and segments:
+                                edge_shape = Part.makeCompound(segments) if len(segments) > 1 else segments[0]
+                                edge_obj = doc.addObject("Part::Feature", f"{safe_params}_Edge_{e_i}")
+                                edge_obj.Shape = edge_shape
+                                edge_obj.ViewObject.LineWidth = 2.0
+                                edge_obj.ViewObject.ShapeColor = edge_color
+                                grp.addObject(edge_obj)
+                            else:
+                                edge_lines.extend(segments)
                         except:
                             continue
 
-                    if edge_lines:
+                    if not individual_edges and edge_lines:
                         edge_comp = Part.makeCompound(edge_lines)
                         edge_obj = doc.addObject("Part::Feature", f"{safe_params}_Edges")
                         edge_obj.Shape = edge_comp
                         edge_obj.ViewObject.LineWidth = 2.0
-
-                        # Color coding
-                        if "Raw" in step_name:
-                            edge_obj.ViewObject.ShapeColor = (1.0, 0.0, 0.0)
-                        elif "Collapse" in step_name:
-                            edge_obj.ViewObject.ShapeColor = (1.0, 0.5, 0.0)
-                        elif "Pruned" in step_name:
-                            edge_obj.ViewObject.ShapeColor = (0.0, 0.0, 1.0)
-                        elif "Simplified" in step_name:
-                            edge_obj.ViewObject.ShapeColor = (0.0, 1.0, 1.0)
-                        else:
-                            edge_obj.ViewObject.ShapeColor = (1.0, 1.0, 1.0)
-
+                        edge_obj.ViewObject.ShapeColor = edge_color
                         grp.addObject(edge_obj)
 
                     # --- PLATES IN SNAPSHOT ---
@@ -1162,16 +1231,36 @@ def import_hybrid_json(json_path=None):
                     shapes = create_curved_beam_sweep(pv0, pv1, pv2, pv3, r)
                     if not shapes:
                         # Fallback to polyline ball-stick if sweep fails
+                        FreeCAD.Console.PrintWarning(
+                            f"  Beam {i}: curved sweep + cylinder fallback both failed "
+                            f"(chord={round((pv3-pv0).Length, 2)}, r={round(r, 2)}), "
+                            f"using ball-stick\n")
                         shapes = create_rod_geometry_ball_stick(pts)
                 else:
                     # Straight beam: original ball-and-stick
                     shapes = create_rod_geometry_ball_stick(pts)
 
+                # Fuse all shapes (spheres + cylinders/cones) into one solid per beam
+                # for clean STEP export (SolidWorks drops loose multi-body parts)
+                if len(shapes) > 1:
+                    try:
+                        fused = shapes[0]
+                        for s in shapes[1:]:
+                            fused = fused.fuse(s)
+                        fused = fused.removeSplitter()
+                        shapes = [fused]
+                    except Exception:
+                        # If fusion fails, fall back to compound
+                        try:
+                            shapes = [Part.makeCompound(shapes)]
+                        except Exception:
+                            pass  # keep original list
+
                 for j, shape in enumerate(shapes):
-                    obj_name = f"Beam_{i}_P_{j}"
+                    obj_name = f"Beam_{i}" if len(shapes) == 1 else f"Beam_{i}_P_{j}"
                     obj = doc.addObject("Part::Feature", obj_name)
                     obj.Shape = shape
-                    
+
                     if getattr(obj, "ViewObject", None) is not None:
                         beam_r = validate_radius(radius_json) if radius_json else (global_r_max if 'global_r_max' in locals() else 1.0)
                         if 'global_r_min' in locals() and 'global_r_max' in locals():
@@ -1181,7 +1270,7 @@ def import_hybrid_json(json_path=None):
                         try:
                             obj.ViewObject.ShapeMaterial = {"SpecularColor": (0.8, 0.8, 0.8), "Shininess": 80.0, "AmbientColor": (0.2, 0.2, 0.2)}
                         except: pass
-                        
+
                     geo_grp.addObject(obj)
                     beam_shape_registry.append((shape.copy(), start_pos, end_pos, obj_name))
             except Exception as e:
@@ -1300,11 +1389,112 @@ def import_hybrid_json(json_path=None):
                              FreeCAD.Console.PrintWarning(f"    Cuboid failed: {e}\n")
                      return None
 
-                # Priority: extruded voxel boxes first (geometrically exact),
-                # then fallbacks in order of fidelity.
-                steps = [try_extruded_voxels, try_voxel_bspline,
-                         try_bspline, try_mesh, try_cuboid]
-                    
+                def try_shell_from_midsurface():
+                    """For curved plates: offset mid-surface by ±thickness/2 along vertex normals."""
+                    if not plate.get("is_curved", False):
+                        return None
+                    ms = plate.get("mid_surface")
+                    if not ms:
+                        return None
+                    ms_verts = ms.get("vertices")
+                    ms_tris = ms.get("triangles")
+                    ms_normals = ms.get("vertex_normals")
+                    ms_thick = ms.get("thickness_per_vertex")
+                    if not ms_verts or not ms_tris or not ms_normals or not ms_thick:
+                        return None
+
+                    try:
+                        import numpy as _np
+                        verts = _np.array(ms_verts)
+                        norms = _np.array(ms_normals)
+                        thick = _np.array(ms_thick)
+
+                        # Create outer and inner offset surfaces
+                        outer_verts = verts + norms * (thick[:, None] / 2.0)
+                        inner_verts = verts - norms * (thick[:, None] / 2.0)
+
+                        n_verts = len(verts)
+                        faces = []
+
+                        # Outer faces (same winding as original)
+                        for tri in ms_tris:
+                            i0, i1, i2 = tri
+                            p0 = FreeCAD.Vector(*outer_verts[i0])
+                            p1 = FreeCAD.Vector(*outer_verts[i1])
+                            p2 = FreeCAD.Vector(*outer_verts[i2])
+                            try:
+                                w = Part.makePolygon([p0, p1, p2, p0])
+                                f = Part.Face(w)
+                                faces.append(f)
+                            except Exception:
+                                pass
+
+                        # Inner faces (reversed winding for inward-facing normals)
+                        for tri in ms_tris:
+                            i0, i1, i2 = tri
+                            p0 = FreeCAD.Vector(*inner_verts[i0])
+                            p1 = FreeCAD.Vector(*inner_verts[i1])
+                            p2 = FreeCAD.Vector(*inner_verts[i2])
+                            try:
+                                w = Part.makePolygon([p0, p2, p1, p0])
+                                f = Part.Face(w)
+                                faces.append(f)
+                            except Exception:
+                                pass
+
+                        # Stitch boundary edges between inner and outer surfaces
+                        # Find boundary edges (edges that belong to only one triangle)
+                        edge_count = {}
+                        for tri in ms_tris:
+                            for a, b in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])]:
+                                e = (min(a, b), max(a, b))
+                                edge_count[e] = edge_count.get(e, 0) + 1
+                        boundary_edges = [e for e, c in edge_count.items() if c == 1]
+
+                        for e0, e1 in boundary_edges:
+                            try:
+                                po0 = FreeCAD.Vector(*outer_verts[e0])
+                                po1 = FreeCAD.Vector(*outer_verts[e1])
+                                pi0 = FreeCAD.Vector(*inner_verts[e0])
+                                pi1 = FreeCAD.Vector(*inner_verts[e1])
+                                # Two triangles to stitch the quad
+                                w1 = Part.makePolygon([po0, po1, pi1, po0])
+                                w2 = Part.makePolygon([po0, pi1, pi0, po0])
+                                faces.append(Part.Face(w1))
+                                faces.append(Part.Face(w2))
+                            except Exception:
+                                pass
+
+                        if len(faces) < 4:
+                            return None
+
+                        shell = Part.makeShell(faces)
+                        try:
+                            if shell.isClosed():
+                                s = Part.Solid(shell)
+                                FreeCAD.Console.PrintMessage(
+                                    f"    ✓ Curved shell solid created "
+                                    f"({len(ms_tris)} mid-surface tris, "
+                                    f"{len(boundary_edges)} boundary edges)\n")
+                                return s
+                        except Exception:
+                            pass
+                        FreeCAD.Console.PrintMessage(
+                            f"    ✓ Curved shell created (open, {len(faces)} faces)\n")
+                        return shell
+                    except Exception as e:
+                        FreeCAD.Console.PrintWarning(
+                            f"    Curved shell failed: {str(e)[:60]}\n")
+                        return None
+
+                # Priority chain: curved plates try offset shell first;
+                # flat plates use extruded voxels (geometrically exact).
+                if plate.get("is_curved", False):
+                    steps = [try_shell_from_midsurface, try_mesh, try_cuboid]
+                else:
+                    steps = [try_extruded_voxels, try_voxel_bspline,
+                             try_bspline, try_mesh, try_cuboid]
+
                 for step in steps:
                     solid = step()
                     if solid: break
@@ -1379,6 +1569,78 @@ def import_hybrid_json(json_path=None):
             FreeCAD.Console.PrintMessage(f"    ✓ Plate {plate_id} added to document\n")
         except Exception as e:
             FreeCAD.Console.PrintWarning(f"  Plate {plate_id} final add failed: {e}\n")
+
+    # ---------------------------------------------------------
+    # 4. FUSED BODY (single solid for STEP export)
+    # ---------------------------------------------------------
+    all_solids = []
+    # Collect beam shapes
+    for shape, _, _, _ in beam_shape_registry:
+        if shape and not shape.isNull():
+            all_solids.append(shape)
+    # Collect plate shapes
+    for plate_id, plate_solid in plate_shapes.items():
+        if plate_solid and not plate_solid.isNull():
+            all_solids.append(plate_solid)
+
+    if len(all_solids) >= 2:
+        FreeCAD.Console.PrintMessage(
+            f"Fusing {len(all_solids)} solids into single body...\n")
+        try:
+            FreeCAD.Gui.updateGui()
+        except:
+            pass
+
+        try:
+            # Batch fuse in groups to avoid OCC memory spikes
+            batch_size = 30
+            batches = [all_solids[i:i+batch_size]
+                       for i in range(0, len(all_solids), batch_size)]
+            fused_batches = []
+            for b_idx, batch in enumerate(batches):
+                FreeCAD.Console.PrintMessage(
+                    f"  Fusing batch {b_idx+1}/{len(batches)} "
+                    f"({len(batch)} shapes)...\n")
+                if len(batch) == 1:
+                    fused_batches.append(batch[0])
+                else:
+                    fused = batch[0].multiFuse(batch[1:])
+                    fused_batches.append(fused)
+                try:
+                    FreeCAD.Gui.updateGui()
+                except:
+                    pass
+
+            # Fuse the batches together
+            if len(fused_batches) == 1:
+                fused_all = fused_batches[0]
+            else:
+                fused_all = fused_batches[0].multiFuse(fused_batches[1:])
+
+            # Clean seam edges
+            try:
+                fused_all = fused_all.removeSplitter()
+            except Exception:
+                pass
+
+            fused_obj = doc.addObject("Part::Feature", "Fused_Body")
+            fused_obj.Shape = fused_all
+            if getattr(fused_obj, "ViewObject", None) is not None:
+                fused_obj.ViewObject.ShapeColor = (0.75, 0.75, 0.75)
+                fused_obj.ViewObject.Transparency = 0
+
+            FreeCAD.Console.PrintMessage(
+                f"  ✓ Fused_Body created "
+                f"({len(all_solids)} shapes → 1 solid)\n")
+        except Exception as e:
+            FreeCAD.Console.PrintWarning(
+                f"  Fused body failed: {str(e)[:80]}\n"
+                f"  Individual beams/plates are still available.\n")
+
+    elif len(all_solids) == 1:
+        fused_obj = doc.addObject("Part::Feature", "Fused_Body")
+        fused_obj.Shape = all_solids[0]
+        FreeCAD.Console.PrintMessage("  ✓ Fused_Body created (single shape)\n")
 
     # Finalize
     FreeCAD.Console.PrintMessage("Finalizing...\n")

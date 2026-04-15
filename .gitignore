@@ -20,6 +20,15 @@ docs/_build/
 .idea/
 .DS_Store
 
+# Claude Code
+.claude/
+
+# Testing
+.pytest_cache/
+
+# LaTeX artifacts
+*.aux
+
 # Pipeline Outputs
 output/
 *.json
@@ -27,6 +36,7 @@ output/
 *.stl
 *.txt
 !README.md
+!requirements.txt
 !HYBRID_TEST_CASES.md
 
 # Temporary development files

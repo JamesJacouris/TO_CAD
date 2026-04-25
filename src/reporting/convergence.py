@@ -167,7 +167,8 @@ def plot_size_layout_convergence(convergence_stages, output_path):
         xo, yo = _offsets[i % len(_offsets)]
         ax.plot(x, c, 's', color=_BLUE, markersize=5, zorder=5,
                 markeredgewidth=0.5, markeredgecolor='white')
-        ax.annotate(f'{c:,.0f}',
+        _lbl = f'{c:,.0f}' if c >= 10 else (f'{c:.3f}' if c >= 0.001 else f'{c:.2e}')
+        ax.annotate(_lbl,
                     xy=(x, c), xytext=(xo, yo),
                     textcoords='offset points',
                     fontsize=6.5, color=_DARK, rotation=30, va='bottom')
@@ -181,8 +182,16 @@ def plot_size_layout_convergence(convergence_stages, output_path):
     ax.set_xlabel('Iterations')
     ax.set_ylabel('Compliance')
     ax.set_xlim(0, max(cum_x))
-    ax.set_ylim(bottom=0)
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+    def _fmt_compliance(x, _):
+        if x == 0: return '0'
+        if x >= 10: return f'{x:,.0f}'
+        if x >= 0.1: return f'{x:.2f}'
+        return f'{x:.2e}'
+    if cum_c and max(cum_c) / (min(c for c in cum_c if c > 0) + 1e-30) > 20:
+        ax.set_yscale('log')
+    else:
+        ax.set_ylim(bottom=0)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(_fmt_compliance))
     ax.grid(axis='y', color=_GREY, alpha=0.30, linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
 
@@ -335,7 +344,8 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
         xo, yo = _offsets[idx % len(_offsets)]
         ax.plot(x, c, 's', color=colour, markersize=_ms, zorder=5,
                 markeredgewidth=0.5, markeredgecolor='white')
-        ax.annotate(f'{c:,.0f}',
+        _lbl = f'{c:,.0f}' if c >= 10 else (f'{c:.3f}' if c >= 0.001 else f'{c:.2e}')
+        ax.annotate(_lbl,
                     xy=(x, c), xytext=(xo, yo),
                     textcoords='offset points',
                     fontsize=_annot_fs, color=_DARK, rotation=30, va='bottom')
@@ -354,8 +364,20 @@ def plot_combined_convergence(top3d_hist, convergence_stages, c_baseline,
     ax.tick_params(labelsize=_tick_fs)
     if all_x:
         ax.set_xlim(0, max(all_x))
-    ax.set_ylim(bottom=0)
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'{x:,.0f}'))
+
+    # Use log scale when initial SIMP compliance dwarfs frame values
+    all_c = rescaled + cum_c
+    all_c_pos = [c for c in all_c if c > 0]
+    def _fmt_c(x, _):
+        if x == 0: return '0'
+        if x >= 10: return f'{x:,.0f}'
+        if x >= 0.1: return f'{x:.2f}'
+        return f'{x:.2e}'
+    if all_c_pos and max(all_c_pos) / min(all_c_pos) > 20:
+        ax.set_yscale('log')
+    else:
+        ax.set_ylim(bottom=0)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(_fmt_c))
     ax.grid(axis='y', color=_GREY, alpha=0.30, linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
     ax.legend(loc='upper right', fontsize=_leg_fs, framealpha=0.9)

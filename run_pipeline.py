@@ -563,8 +563,8 @@ def main():
     g_out.add_argument("--output", type=str, default="full_control_beam.json", help="Final output JSON filename")
     g_out.add_argument("--output_dir", type=str, default="output/hybrid_v2", help="Output directory")
     g_out.add_argument("--visualize", action="store_true", help="Show 3D debug windows")
-    g_out.add_argument("--export_stl", action="store_true",
-                       help="Export Top3D result as watertight STL (marching cubes isosurface) for CAD/FEA import")
+    g_out.add_argument("--no_stl", action="store_true",
+                       help="Skip STL export of the Top3D voxel mesh (marching cubes isosurface)")
     g_out.add_argument("--fig_size", type=str, default=None,
                        help="Figure size as 'WxH' in inches (e.g. '3.5x2.6' for IEEE single-column). "
                             "Default: 9x4 (wide format).")
@@ -720,8 +720,8 @@ def main():
     except Exception:
         pass
 
-    # ── Optional: Export Top3D result as STL ──────────────────────────────
-    if args.export_stl:
+    # ── Export Top3D result as STL (skip with --no_stl) ──────────────────
+    if not args.no_stl:
         from src.export.npz_to_stl import export_top3d_stl
         stl_path = os.path.join(args.output_dir, f"{base_name}_top3d.stl")
         export_top3d_stl(npz_path, stl_path, vol_thresh=args.vol_thresh, pitch=args.pitch)

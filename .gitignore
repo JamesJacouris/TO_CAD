@@ -28,6 +28,12 @@ docs/_build/
 
 # LaTeX artifacts
 *.aux
+*.lof
+*.lot
+*.out
+*.sta
+*.toc
+*.synctex.gz
 
 # Pipeline Outputs
 output/

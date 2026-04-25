@@ -50,11 +50,13 @@ class TaggedProblem:
             bc = data['bc_tags']
             p = float(data['pitch']) if 'pitch' in data else pitch
             o = data['origin'].astype(float) if 'origin' in data else (origin or np.zeros(3))
-            load_ijk = np.argwhere(bc == 2)
+            load_ijk = np.argwhere(bc == 2)  # [nely_idx, nelx_idx, nelz_idx]
             if len(load_ijk) == 0:
                 return
-            centroid_ijk = load_ijk.mean(axis=0)
-            self._load_position = centroid_ijk * p + np.asarray(o)
+            centroid_ijk = load_ijk.mean(axis=0)  # [nely, nelx, nelz]
+            # Reorder to world coords [nelx, nely, nelz] to match graph node positions
+            centroid_world = centroid_ijk[[1, 0, 2]]
+            self._load_position = centroid_world * p + np.asarray(o) + p * 0.5
         except Exception:
             pass
     

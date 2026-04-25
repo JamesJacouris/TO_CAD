@@ -86,6 +86,13 @@ def export_top3d_stl(npz_path, stl_path, vol_thresh=0.3, pitch=1.0,
     # Create trimesh
     mesh = trimesh.Trimesh(vertices=verts, faces=faces, vertex_normals=normals)
 
+    # Keep only the largest connected component (removes isolated density islands)
+    components = mesh.split(only_watertight=False)
+    if len(components) > 1:
+        mesh = max(components, key=lambda m: len(m.faces))
+        print(f"[NPZ→STL] Kept largest component ({len(mesh.faces):,} faces) "
+              f"of {len(components)} disconnected pieces")
+
     # Laplacian smoothing for cleaner surface
     if smooth_iters > 0:
         trimesh.smoothing.filter_laplacian(mesh, iterations=smooth_iters)

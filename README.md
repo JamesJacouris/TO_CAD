@@ -234,4 +234,4 @@ TO_CAD/
 
 ## License
 
-This project was developed as part of a dissertation at the University of Bath.
+This project was developed as part of a dissertation at Durham University.
